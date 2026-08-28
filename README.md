@@ -1,6 +1,6 @@
 # Football Contracts Research Pipeline
 
-Structured-data backbone for research on contractual incentives in European football transfers. This first stage is deliberately limited to deterministic processing of the published [transfermarkt-datasets](https://github.com/dcaribou/transfermarkt-datasets) DuckDB snapshot. Web and LLM contract research will be added later without changing the structured event records.
+Structured-data backbone for research on contractual incentives in European football transfers. The deterministic stage uses the public [dcaribou/transfermarkt-datasets](https://github.com/dcaribou/transfermarkt-datasets) project and its published DuckDB snapshot. A separate one-event contract-research stage adds source-backed findings without changing deterministic Transfermarkt values.
 
 ## Source schema and joins
 
@@ -29,6 +29,9 @@ src/select_transfers.py  Pilot selection and event construction CLI
 src/enrich_structured.py Canonical enrichment orchestration
 src/compute_minutes.py    Date-window playing-time calculations
 src/schemas.py       Canonical fields and validation checks
+src/contract_schemas.py  Research result, evidence, and review schemas
+src/research_contract.py One-event provider interface and CLI
+prompts/contract_research.md  Web-research extraction instructions
 tests/               Focused unit tests
 ```
 
@@ -54,6 +57,39 @@ python -m src.select_transfers --club "FC Porto" --club "Benfica" --season "2024
 ```
 
 Useful options include `--db PATH`, `--source-url URL`, `--output-dir PATH`, and `--no-download`.
+
+## Contract research pilot
+
+The research stage reads exactly one event from `structured_transfers.csv`, sends the event identity and transfer details to a web-search-capable provider, validates the structured response, and writes an independent JSON artifact under `data/outputs/contract_research/`. It never overwrites deterministic fields.
+
+The live adapter uses the OpenAI Responses API with its `web_search_preview` tool. No additional Python SDK is required, but live research requires an API key:
+
+```bash
+export OPENAI_API_KEY="..."
+python -m src.research_contract --event-id tm_32efe6f99f407ed52bf3
+```
+
+Use `OPENAI_MODEL` or `--model` to select a model. The provider interface is isolated in `ResearchProvider`, so another search/model service can be added without changing the schema or CLI orchestration. Offline provider responses can be validated with:
+
+```bash
+python -m src.research_contract \
+	--event-id tm_32efe6f99f407ed52bf3 \
+	--fixture path/to/provider-result.json
+```
+
+The output contains one object per researched field, plus source records. Each field includes `status`, `confidence`, and `evidence_ids`; evidence includes URL, title, publisher, source type, publication/retrieval dates, excerpt, and language.
+
+Research status is deliberately conservative:
+
+- `disclosed_yes`: a reliable source establishes the term exists.
+- `disclosed_no`: a reliable source explicitly establishes the term does not exist.
+- `partially_disclosed`: the term is known but an amount, percentage, or condition is unknown.
+- `undisclosed`: a source explicitly says the amount or terms were undisclosed.
+- `not_found`: the search did not locate reliable evidence; this does not mean the term was absent.
+- `conflicting_sources`: credible sources disagree.
+- `not_applicable`: the field does not apply to the deal.
+
+Validation automatically sets `review_required` for conflicting sources, purchase obligations, obligation triggers, low-confidence findings, and other explicitly supplied review reasons. It also rejects unknown statuses, out-of-range confidence, broken evidence references, and false values paired with `not_found` or `partially_disclosed`.
 
 ## Output fields
 
