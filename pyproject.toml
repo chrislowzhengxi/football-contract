@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "football-contracts"
+version = "0.1.0"
+description = "Structured Transfermarkt pipeline for football transfer contract research"
+requires-python = ">=3.10"
+dependencies = ["duckdb>=1.0", "pandas>=2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

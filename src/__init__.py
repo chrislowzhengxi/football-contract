@@ -1,0 +1,1 @@
+"""Structured football contracts research pipeline."""
