@@ -30,6 +30,16 @@ class Evidence:
 
 
 @dataclass
+class ProviderMetadata:
+    provider: str | None = None
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    parley_cost_header: str | None = None
+    total_request_cost: float | None = None
+
+
+@dataclass
 class ContractField:
     value: Any = None
     status: str = "not_found"
@@ -83,6 +93,7 @@ class ContractResearchResult:
     buy_back: ContractField
     parent_contract_expiry: ContractField
     release_or_purchase_clause: ContractField
+    provider_metadata: ProviderMetadata = field(default_factory=ProviderMetadata)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,6 +112,7 @@ class ContractResearchResult:
             deal_summary=str(payload["deal_summary"]),
             review_required=bool(payload.get("review_required", False)),
             review_reasons=[str(reason) for reason in payload.get("review_reasons", [])],
+            provider_metadata=ProviderMetadata(**payload.get("provider_metadata", {})),
             **fields,
         )
         validate_research_result(result)

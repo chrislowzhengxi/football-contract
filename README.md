@@ -31,6 +31,7 @@ src/compute_minutes.py    Date-window playing-time calculations
 src/schemas.py       Canonical fields and validation checks
 src/contract_schemas.py  Research result, evidence, and review schemas
 src/research_contract.py One-event provider interface and CLI
+src/source_discovery.py  SourceCandidate and SearchProvider interfaces
 prompts/contract_research.md  Web-research extraction instructions
 tests/               Focused unit tests
 ```
@@ -60,22 +61,44 @@ Useful options include `--db PATH`, `--source-url URL`, `--output-dir PATH`, and
 
 ## Contract research pilot
 
-The research stage reads exactly one event from `structured_transfers.csv`, sends the event identity and transfer details to a web-search-capable provider, validates the structured response, and writes an independent JSON artifact under `data/outputs/contract_research/`. It never overwrites deterministic fields.
+The research stage reads exactly one event from `structured_transfers.csv` and manually supplied source records, sends both to Parley for extraction, validates the structured response, and writes an independent JSON artifact under `data/outputs/contract_research/`. It never overwrites deterministic fields. There is no live or paid search provider in this iteration. `SearchProvider` is an interface-only boundary for a future source-discovery implementation.
 
-The live adapter uses the OpenAI Responses API with its `web_search_preview` tool. No additional Python SDK is required, but live research requires an API key:
+Parley uses the OpenAI-compatible Chat Completions API. Set the key only in the shell environment and choose a model with `PARLEY_MODEL` or `--model`:
 
 ```bash
-export OPENAI_API_KEY="..."
-python -m src.research_contract --event-id tm_32efe6f99f407ed52bf3
+export PARLEY_API_KEY="sk-parley-v1-..."
+export PARLEY_MODEL="bedrock/claude-haiku-4-5"
+python -m src.research_contract \
+	--event-id tm_32efe6f99f407ed52bf3 \
+	--sources path/to/sources.json
 ```
 
-Use `OPENAI_MODEL` or `--model` to select a model. The provider interface is isolated in `ResearchProvider`, so another search/model service can be added without changing the schema or CLI orchestration. Offline provider responses can be validated with:
+The default model is the lower-cost `bedrock/claude-haiku-4-5`; verify current availability with Parley's models endpoint before the first live call. Offline provider responses can be validated with:
 
 ```bash
 python -m src.research_contract \
 	--event-id tm_32efe6f99f407ed52bf3 \
+	--sources path/to/sources.json \
 	--fixture path/to/provider-result.json
 ```
+
+Manual source file format:
+
+```json
+[
+	{
+		"source_url": "https://example.com/announcement",
+		"source_title": "Player joins Club",
+		"publisher": "Club",
+		"publication_date": "2024-08-27",
+		"source_type": "official",
+		"evidence_text": "The club announces ...",
+		"language": "en"
+	}
+]
+```
+
+The live Parley request uses `response_format: {"type": "json_object"}`. The result stores provider, model, prompt tokens, completion tokens, Parley's `x-parley-v1-cost` header, and a parsed total request cost when numeric. The API key is never written to the result.
 
 The output contains one object per researched field, plus source records. Each field includes `status`, `confidence`, and `evidence_ids`; evidence includes URL, title, publisher, source type, publication/retrieval dates, excerpt, and language.
 
