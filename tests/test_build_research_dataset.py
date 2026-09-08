@@ -71,8 +71,8 @@ def test_classification_counts_match_batch_summary():
     df = dataset()
     batch = json.loads(BATCH.read_text())
     counts = Counter(df["classification"])
-    assert counts["clean"] == batch["clean"] == 2
-    assert counts["usable_with_review"] == batch["usable_with_review"] == 7
+    assert counts["clean"] == batch["clean"] == 5
+    assert counts["usable_with_review"] == batch["usable_with_review"] == 4
     assert counts["insufficient_evidence"] == batch["insufficient_evidence"] == 11
     assert counts["invalid"] == batch["invalid"] == 0
 
@@ -126,7 +126,7 @@ def test_audit_table_preserves_provenance():
 
 def test_review_queue_contains_only_usable_with_review_events():
     queue = build_review_queue(analysis(), audit())
-    assert len(queue) == 7
+    assert len(queue) == 4
     assert set(queue["event_id"]) == set(analysis().loc[analysis()["classification"] == "usable_with_review", "event_id"])
     assert "source_urls" in queue
     assert queue["source_urls"].notna().all()
@@ -149,15 +149,46 @@ def test_status_breakdown_counts_are_internally_consistent():
         assert total == len(df)
 
 
+def test_corrected_clean_cases_have_no_unresolved_review_reasons():
+    df = audit().set_index("event_id")
+    for event_id in ["tm_1c61e919afc42ed4ee08", "tm_5a39adbdd28687ae4f98", "tm_694c30a10815aea6d84d"]:
+        assert df.loc[event_id, "classification"] == "clean"
+        assert not bool(df.loc[event_id, "review_required"])
+        assert pd.isna(df.loc[event_id, "review_reasons"])
+
+
+def test_thiago_silva_remains_review_required_for_expiry_ambiguity():
+    df = audit().set_index("event_id")
+    row = df.loc["tm_78e3733d67be84096fe7"]
+    assert row["classification"] == "usable_with_review"
+    assert bool(row["review_required"])
+    assert row["researched_parent_contract_expiry"] == "through 2025-26 season; option to extend through summer 2027"
+    assert pd.isna(row["researched_parent_contract_expiry_date"])
+    assert row["researched_parent_contract_expiry_precision"] == "year_or_season"
+
+
+def test_unresolved_cases_remain_unchanged():
+    df = audit().set_index("event_id")
+    assert df.loc["tm_b8d2830a76ece80d8d96", "classification"] == "usable_with_review"
+    assert df.loc["tm_b8d2830a76ece80d8d96", "researched_purchase_option_status"] == "partially_disclosed"
+    assert df.loc["tm_46a910a95150314a1717", "classification"] == "usable_with_review"
+    assert df.loc["tm_46a910a95150314a1717", "researched_transfer_type"] == "loan"
+    assert df.loc["tm_163d23e38fec40c7a994", "classification"] == "usable_with_review"
+    assert df.loc["tm_163d23e38fec40c7a994", "researched_transfer_fee_status"] == "undisclosed"
+
+
 def test_not_applicable_is_not_counted_as_usable_value():
     counts = status_breakdown(analysis())
     assert counts["loan_fee"]["not_applicable"] > 0
-    assert counts["loan_fee"]["usable_value_count"] == 0
+    assert counts["loan_fee"]["usable_value_count"] == 1
 
 
 def test_explicit_disclosed_no_for_binary_fields_counts_as_usable():
-    counts = status_breakdown(analysis())
-    assert counts["purchase_option"]["disclosed_no"] == 1
+    df = analysis()
+    df.loc[df.index[0], "researched_purchase_option"] = False
+    df.loc[df.index[0], "researched_purchase_option_status"] = "disclosed_no"
+    counts = status_breakdown(df)
+    assert counts["purchase_option"]["disclosed_no"] >= 1
     assert counts["purchase_option"]["usable_value_count"] >= 1
 
 
@@ -165,6 +196,17 @@ def test_numeric_usable_values_require_actual_values():
     counts = status_breakdown(analysis())
     assert counts["transfer_fee"]["disclosed_yes"] == 3
     assert counts["transfer_fee"]["usable_value_count"] == 3
+
+
+def test_derived_tables_regenerate_successfully(tmp_path):
+    raw = build_research_dataset(STRUCTURED, BATCH, tmp_path / "raw.csv")
+    analysis_df = build_analysis_table(raw)
+    audit_df = build_audit_table(raw)
+    queue = build_review_queue(analysis_df, audit_df)
+    assert (tmp_path / "raw.csv").exists()
+    assert len(analysis_df) == 20
+    assert len(queue) == 4
+    assert set(raw["event_id"]) == set(analysis_df["event_id"])
 
 
 def test_admissible_tier2_metrics_use_admissible_artifacts():

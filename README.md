@@ -104,26 +104,36 @@ The output contains one object per researched field, plus source records. Each f
 
 ## Source discovery
 
-`src/source_discovery.py` provides a real `BraveSearchProvider` behind the
-`SearchProvider` interface. It issues targeted transfer, fee, loan-option,
-obligation, add-on, official-announcement, and sell-on queries; converts only
-search-provider metadata and snippets into `SourceCandidate` records; checks
-link accessibility; scores source quality deterministically; removes duplicate
-or syndicated results; and applies an evidence-sufficiency gate before
-extraction. It does not extract contract claims or use Transfermarkt as
-contractual evidence.
+`src/source_discovery.py` provides a real `TavilySearchProvider` behind the
+`SearchProvider` interface. It builds a bounded multi-stage query plan covering
+generic event identity, mapped official club domains, mechanism-specific terms,
+and Portuguese-language terms for Portuguese clubs. Search metadata and snippets
+are normalized into `SourceCandidate` records with query-family provenance,
+link accessibility, deterministic source-tier scoring, event-direction matching,
+deduplication, and an evidence-sufficiency gate before extraction. It does not
+extract contract claims or use Transfermarkt as contractual evidence.
 
-The provider requires a Brave Search API key:
+The provider requires a Tavily API key:
 
 ```bash
-export BRAVE_SEARCH_API_KEY="..."
+export TAVILY_API_KEY="..."
 ```
 
-Call `discover_transfer(event, BraveSearchProvider.from_environment())` from
-Python. A source set is sufficient when it contains one strong accessible source
-or two independent reputable accessible sources. Without the key, the layer
-refuses to search instead of falling back to unreliable search-engine HTML
-scraping.
+Call `discover_transfer(event, TavilySearchProvider.from_environment())` from
+Python. For source-discovery dry runs, inspect the query plan without network
+calls:
+
+```bash
+python -m src.source_discovery --event-id tm_... --dry-run
+```
+
+A source set is sufficient only when admissible Tier 1/2 evidence establishes
+the exact or likely transfer event identity and then contains one strong
+accessible source or two independent reputable accessible sources. Reverse
+directions, loan-return articles, and later permanent transfers are retained in
+discovery provenance but cannot independently establish contractual fields.
+Without the key, the live provider refuses to search instead of falling back to
+unreliable search-engine HTML scraping.
 
 Research status is deliberately conservative:
 

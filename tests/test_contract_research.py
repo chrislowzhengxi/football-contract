@@ -129,6 +129,27 @@ def test_explicit_parent_expiry_does_not_trigger_inference_review():
     assert "parent contract expiry is not explicitly sourced" not in result.review_reasons
 
 
+def test_year_only_parent_expiry_does_not_invent_exact_date():
+    evidence = source()
+    evidence[0]["evidence_text"] = "The player signed a contract valid until 2028."
+    result = ContractResearchResult.from_dict(result_payload(
+        sources=evidence,
+        parent_contract_expiry={
+            "value": "2028",
+            "year": 2028,
+            "precision": "year",
+            "date": None,
+            "status": "disclosed_yes",
+            "confidence": 0.9,
+            "evidence_ids": ["s1"],
+        },
+    ))
+    assert result.parent_contract_expiry.date is None
+    assert result.parent_contract_expiry.year == 2028
+    assert result.parent_contract_expiry.precision == "year"
+    assert "unsupported_contract_expiry" not in result.review_reasons
+
+
 def test_base_fee_and_total_package_are_distinguished():
     evidence = source()
     evidence[0]["evidence_text"] = "The base fee was €28m and could increase to €30m with add-ons."

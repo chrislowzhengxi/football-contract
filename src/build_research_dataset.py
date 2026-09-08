@@ -95,7 +95,7 @@ def _json_text(value: Any) -> str | None:
 
 
 def _field_value(field: dict[str, Any]) -> Any:
-    for key in ("amount", "price", "percentage", "date", "value"):
+    for key in ("amount", "price", "percentage", "date", "value", "year"):
         value = field.get(key)
         if value is not None:
             return value
@@ -111,6 +111,8 @@ def _flatten_contract_field(prefix: str, field: dict[str, Any]) -> dict[str, Any
         f"{prefix}_price": field.get("price"),
         f"{prefix}_percentage": field.get("percentage"),
         f"{prefix}_date": field.get("date"),
+        f"{prefix}_year": field.get("year"),
+        f"{prefix}_precision": field.get("precision"),
         f"{prefix}_description": field.get("description"),
         f"{prefix}_evidence_ids": _json_text(field.get("evidence_ids")),
         f"{prefix}_reported_values": _json_text(field.get("reported_values")),

@@ -57,6 +57,8 @@ class ContractField:
     unit: str | None = None
     additional_condition: str | None = None
     date: str | None = None
+    year: int | None = None
+    precision: str | None = None
     exercised: bool | None = None
     evidence_ids: list[str] = field(default_factory=list)
     reported_values: list[dict[str, Any]] = field(default_factory=list)
@@ -214,13 +216,15 @@ def validate_research_result(result: ContractResearchResult) -> None:
             reasons.add("obligation trigger requires human review")
         if finding.confidence < 0.5 and finding.status not in {"not_found", "not_applicable"}:
             reasons.add(f"low-confidence extraction for {name}")
-        if name == "parent_contract_expiry" and (finding.value is not None or finding.date is not None):
+        if name == "parent_contract_expiry" and (
+            finding.date is not None or (finding.value is not None and finding.precision not in {"year", "year_or_season"})
+        ):
             linked_text = " ".join(
                 source.evidence_text.lower()
                 for source in result.sources
                 if source.evidence_id in finding.evidence_ids
             )
-            explicit_date_terms = ("contract expires", "contract expiry", "contract until", "contract through", "years remaining", "year contract", "contract duration")
+            explicit_date_terms = ("contract expires", "contract expiry", "contract until", "contract through", "contract valid until", "years remaining", "year contract", "contract duration")
             date_is_explicit = any(term in linked_text for term in explicit_date_terms)
             if not date_is_explicit:
                 reasons.discard("parent contract expiry is not explicitly sourced")
@@ -256,7 +260,7 @@ def _add_specific_review_reasons(result: ContractResearchResult, reasons: set[st
         reasons.add("base_fee_vs_total_package_ambiguity")
     if result.transfer_fee.status == "conflicting_sources":
         reasons.add("conflicting_base_fee_reports")
-    if result.transfer_fee.amount is not None and len(result.transfer_fee.evidence_ids) == 1:
+    if result.transfer_fee.amount is not None and result.transfer_fee.amount > 0 and len(result.transfer_fee.evidence_ids) == 1:
         linked_sources = [source for source in result.sources if source.evidence_id in result.transfer_fee.evidence_ids]
         if linked_sources and linked_sources[0].source_type not in {"official", "regulatory", "governing_body"}:
             reasons.add("weak_source_for_exact_financial_term")

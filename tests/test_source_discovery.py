@@ -5,10 +5,13 @@ import pytest
 from src.source_discovery import (
     TavilySearchProvider,
     SourceCandidate,
+    assess_event_match,
     assess_source_sufficiency,
+    build_query_plan,
     build_search_queries,
     deduplicate_sources,
     filter_admissible_sources,
+    official_domain_for_club,
     score_source,
     source_tier,
 )
@@ -38,7 +41,141 @@ def test_query_templates_cover_contract_terms():
     assert any("transfer fee" in query for query in queries)
     assert any("option to buy" in query for query in queries)
     assert any("obligation to buy" in query for query in queries)
-    assert any("sell-on clause" in query for query in queries)
+
+
+def test_query_plan_has_bounded_multistage_queries():
+    plans = build_query_plan({
+        "player_name": "Florentino",
+        "from_club_name": "SL Benfica",
+        "to_club_name": "Burnley",
+        "transfer_date": "2025-07-01",
+    })
+    assert len(plans) <= 6
+    assert [plan.family for plan in plans][:2] == ["generic_event", "club_domain"]
+    assert any(plan.family == "mechanism" for plan in plans)
+    assert any(plan.family == "local_language" and plan.language == "pt" for plan in plans)
+    assert any("obrigação de compra" in plan.query for plan in plans)
+
+
+def test_mechanism_query_uses_unresolved_fields():
+    plans = build_query_plan(
+        {
+            "player_name": "Player",
+            "from_club_name": "Club A",
+            "to_club_name": "Club B",
+            "transfer_date": "2025-07-01",
+        },
+        unresolved_fields=["loan_fee", "purchase_obligation"],
+    )
+    mechanism = [plan.query for plan in plans if plan.family == "mechanism"][0]
+    assert "loan fee" in mechanism
+    assert "obligation to buy" in mechanism
+
+
+def test_exact_transfer_direction_is_admissible():
+    event = {
+        "player_name": "Soualiho Meïté",
+        "from_club_name": "Benfica",
+        "to_club_name": "PAOK",
+        "transfer_date": "2025-07-01",
+    }
+    item = candidate(
+        source_url="https://paokfc.gr/news",
+        source_type="official",
+        source_title="PAOK signs Soualiho Meite",
+        evidence_text="Soualiho Meite has joined PAOK from Benfica on a permanent transfer in 2025.",
+    )
+    item.event_match_status, item.event_match_score, item.event_match_reasons = assess_event_match(item, event)
+    assert item.event_match_status == "exact"
+    assert filter_admissible_sources([item]) == [item]
+
+
+def test_reverse_transfer_direction_is_rejected():
+    event = {
+        "player_name": "Andrea Belotti",
+        "from_club_name": "Benfica",
+        "to_club_name": "Como",
+        "transfer_date": "2025-07-01",
+    }
+    item = candidate(
+        source_url="https://comofootball.com/news",
+        source_type="official",
+        source_title="Andrea Belotti joins Benfica",
+        evidence_text="Andrea Belotti joined Benfica on loan from Como in 2024.",
+    )
+    item.event_match_status, _, reasons = assess_event_match(item, event)
+    assert item.event_match_status == "mismatch"
+    assert "reverse_direction" in reasons
+    assert filter_admissible_sources([item]) == []
+
+
+def test_receiving_club_official_announcement_can_be_likely_without_departing_club():
+    event = {
+        "player_name": "Danny Namaso",
+        "from_club_name": "Porto",
+        "to_club_name": "AJ Auxerre",
+        "transfer_date": "2025-08-17",
+    }
+    item = candidate(
+        source_url="https://www.aja.fr/danny-namaso-rejoint-laja",
+        source_type="official",
+        source_title="Actualités Danny Namaso rejoint l'AJA",
+        evidence_text="Danny Namaso rejoint l'AJA pour la saison 2025.",
+    )
+    item.event_match_status, _, reasons = assess_event_match(item, event)
+    assert item.event_match_status == "likely"
+    assert "receiving_club_official_announcement" in reasons
+
+
+def test_receiving_club_official_rule_still_rejects_reverse_direction():
+    event = {
+        "player_name": "Andrea Belotti",
+        "from_club_name": "Benfica",
+        "to_club_name": "Como",
+        "transfer_date": "2025-06-30",
+    }
+    item = candidate(
+        source_url="https://comofootball.com/en/andrea-belotti-loan-from-como-1907-to-benfica",
+        source_type="official",
+        source_title="Andrea Belotti loan from Como 1907 to Benfica",
+        evidence_text="Andrea Belotti joined Benfica on loan from Como in 2024.",
+    )
+    status, _, reasons = assess_event_match(item, event)
+    assert status == "mismatch"
+    assert "reverse_direction" in reasons
+
+
+def test_later_permanent_transfer_does_not_establish_original_loan_terms():
+    event = {
+        "player_name": "Player",
+        "from_club_name": "Benfica",
+        "to_club_name": "Burnley",
+        "transfer_date": "2024-08-01",
+    }
+    item = candidate(
+        source_type="major_news",
+        evidence_text="Player made a permanent transfer to Burnley from Benfica after a season-long loan.",
+    )
+    item.event_match_status, _, reasons = assess_event_match(item, event)
+    assert item.event_match_status == "ambiguous"
+    assert "loan_followed_by_permanent_transfer" in reasons
+    assert filter_admissible_sources([item]) == []
+
+
+def test_loan_return_article_does_not_establish_original_loan():
+    event = {
+        "player_name": "Player",
+        "from_club_name": "Como",
+        "to_club_name": "Benfica",
+        "transfer_date": "2024-08-01",
+    }
+    item = candidate(
+        source_type="major_news",
+        evidence_text="Player returned to Como after his Benfica loan ended.",
+    )
+    status, _, reasons = assess_event_match(item, event)
+    assert status == "mismatch"
+    assert "loan_return_without_target_direction" in reasons
 
 
 def test_official_source_ranks_above_secondary_reporting():
@@ -46,6 +183,22 @@ def test_official_source_ranks_above_secondary_reporting():
     official = candidate(source_url="https://club-a.example.com/news", source_type="official")
     secondary = candidate(source_url="https://news.example.com/article", source_type="major_news")
     assert score_source(official, event) > score_source(secondary, event)
+
+
+def test_official_club_domain_ranks_above_aggregator():
+    event = {"player_name": "Player", "from_club_name": "Benfica", "to_club_name": "PAOK", "transfer_date": "2025-07-01"}
+    official = candidate(
+        source_url="https://slbenfica.pt/news/player",
+        source_type="official",
+        target_domain=official_domain_for_club("Benfica"),
+        event_match_status="exact",
+    )
+    aggregator = candidate(
+        source_url="https://example.com/player",
+        source_type="aggregator",
+        event_match_status="exact",
+    )
+    assert score_source(official, event) > score_source(aggregator, event)
 
 
 def test_syndicated_sources_are_deduplicated():
@@ -104,6 +257,8 @@ def test_tavily_normalizes_results_and_preserves_provider_score(monkeypatch):
     assert results[0].publisher == "reuters.com"
     assert results[0].provider_score == 0.91
     assert results[0].evidence_text == "Player joined Porto for EUR 10m."
+    assert results[0].query_family
+    assert results[0].event_match_status
     assert provider.search_count == 0
 
 
@@ -136,6 +291,20 @@ def test_tier_three_sources_are_not_admissible_for_parley():
     assert source_tier(official) == 1
     assert source_tier(aggregator) == 3
     assert admissible == [official]
+
+
+def test_tier_three_cannot_satisfy_exact_financial_terms():
+    tm = candidate(
+        source_url="https://www.transfermarkt.com/player",
+        source_type="aggregator",
+        quality_score=95,
+        event_match_status="exact",
+    )
+    admissible = filter_admissible_sources([tm])
+    sufficient, reasons = assess_source_sufficiency(admissible)
+    assert admissible == []
+    assert not sufficient
+    assert reasons
 
 
 def test_major_news_is_admissible_but_social_is_not():
