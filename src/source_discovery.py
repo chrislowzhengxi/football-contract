@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .config import DEFAULT_OUTPUT_DIR
+from .source_registry import OFFICIAL_CLUB_DOMAINS, REPUTABLE_TIER2_DOMAINS
 
 
 @dataclass
@@ -40,6 +41,14 @@ class SourceCandidate:
     query_language: str | None = None
     target_domain: str | None = None
     query_reason: str | None = None
+    retrieved_text: str | None = None
+    retrieval_status: str | None = None
+    retrieval_http_status: int | None = None
+    retrieval_final_url: str | None = None
+    retrieval_timestamp: str | None = None
+    retrieval_method: str | None = None
+    retrieval_error: str | None = None
+    content_length: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,36 +81,12 @@ class QueryPlan:
 REPUTABLE_DOMAINS = {
     "reuters.com", "bbc.com", "espn.com", "theathletic.com", "nytimes.com",
     "apnews.com", "theguardian.com", "skysports.com", "goal.com",
-}
+} | {domain for domain, entry in REPUTABLE_TIER2_DOMAINS.items() if entry.source_type == "major_news"}
 SPECIALIST_DOMAINS = {
     "football-italia.net", "maisfutebol.iol.pt", "ojogo.pt", "record.pt",
     "a-bola.pt", "lequipe.fr", "marca.com", "as.com",
-}
-CLUB_DOMAINS = {
-    "benfica": "slbenfica.pt",
-    "sl benfica": "slbenfica.pt",
-    "porto": "fcporto.pt",
-    "fc porto": "fcporto.pt",
-    "psv": "psv.nl",
-    "paok": "paokfc.gr",
-    "como": "comofootball.com",
-    "burnley": "burnleyfootballclub.com",
-    "southampton": "southamptonfc.com",
-    "juventus": "juventus.com",
-    "psg": "psg.fr",
-    "paris saint-germain": "psg.fr",
-    "rosario central": "rosariocentral.com",
-    "fenerbahce": "fenerbahce.org",
-    "fenerbahçe": "fenerbahce.org",
-    "braga": "scbraga.pt",
-    "besiktas": "bjk.com.tr",
-    "beşiktaş": "bjk.com.tr",
-    "aek athens": "aekfc.gr",
-    "aj auxerre": "aja.fr",
-    "auxerre": "aja.fr",
-    "basel": "fcb.ch",
-    "estrela amadora": "estrelamadora.pt",
-}
+} | {domain for domain, entry in REPUTABLE_TIER2_DOMAINS.items() if entry.source_type == "football_reporting"}
+CLUB_DOMAINS = {club: entry.domain for club, entry in OFFICIAL_CLUB_DOMAINS.items()}
 CLUB_ALIASES = {
     "porto": ("porto", "fc porto"),
     "fc porto": ("porto", "fc porto"),
@@ -112,6 +97,9 @@ CLUB_ALIASES = {
     "estrela amadora": ("estrela amadora", "estrela da amadora"),
 }
 PORTUGUESE_CLUBS = {"benfica", "sl benfica", "porto", "fc porto", "braga"}
+TURKISH_CLUBS = {"besiktas", "beşiktaş", "fenerbahce", "fenerbahçe"}
+FRENCH_CLUBS = {"psg", "paris saint-germain"}
+GREEK_CLUBS = {"aek athens"}
 PORTUGUESE_MECHANISM_TERMS = (
     "transferência",
     "empréstimo",
@@ -123,6 +111,12 @@ PORTUGUESE_MECHANISM_TERMS = (
     "mais-valia",
     "percentagem",
 )
+LOCAL_LANGUAGE_TERMS = {
+    "pt": PORTUGUESE_MECHANISM_TERMS[:7],
+    "tr": ("transfer", "kiralık", "satın alma opsiyonu", "zorunlu satın alma", "bonservis", "sözleşme"),
+    "fr": ("transfert", "prêt", "option d'achat", "obligation d'achat", "montant", "contrat"),
+    "el": ("μεταγραφή", "δανεισμός", "οψιόν αγοράς", "υποχρεωτική αγορά", "συμβόλαιο"),
+}
 
 
 def build_search_queries(event: dict[str, Any]) -> list[str]:
@@ -150,14 +144,33 @@ def build_query_plan(event: dict[str, Any], max_queries: int = 6, unresolved_fie
     terms = mechanism_terms_for_event(event, unresolved_fields)
     if terms:
         plans.append(QueryPlan(f"{identity} {' '.join(terms[:4])}", "mechanism", reason="search for specific contract mechanisms"))
-    if any(_club_key(str(club)) in PORTUGUESE_CLUBS for club in (from_club, to_club)):
-        pt_terms = " ".join(PORTUGUESE_MECHANISM_TERMS[:4])
-        plans.append(QueryPlan(f'"{player}" "{from_club}" "{to_club}" {year} {pt_terms}', "local_language", language="pt", reason="Portuguese mechanism vocabulary for Portuguese clubs"))
+    language = local_language_for_event(event)
+    if language:
+        local_terms = " ".join(LOCAL_LANGUAGE_TERMS[language][:4])
+        plans.append(QueryPlan(
+            f'"{player}" "{from_club}" "{to_club}" {year} {local_terms}',
+            "local_language",
+            language=language,
+            reason=f"{language} mechanism vocabulary for local clubs",
+        ))
     return plans[:max_queries]
 
 
 def official_domain_for_club(club_name: str) -> str | None:
     return CLUB_DOMAINS.get(_club_key(club_name))
+
+
+def local_language_for_event(event: dict[str, Any]) -> str | None:
+    club_keys = {_club_key(str(event.get(key, ""))) for key in ("from_club_name", "to_club_name")}
+    if club_keys & PORTUGUESE_CLUBS:
+        return "pt"
+    if club_keys & TURKISH_CLUBS:
+        return "tr"
+    if club_keys & FRENCH_CLUBS:
+        return "fr"
+    if club_keys & GREEK_CLUBS:
+        return "el"
+    return None
 
 
 def _club_key(club_name: str) -> str:
@@ -233,7 +246,7 @@ def filter_admissible_sources(candidates: list[SourceCandidate]) -> list[SourceC
 
 
 def assess_event_match(candidate: SourceCandidate, event: dict[str, Any]) -> tuple[str, float, list[str]]:
-    haystack = _text_key(f"{candidate.source_title or ''} {candidate.evidence_text}")
+    haystack = _text_key(f"{candidate.source_title or ''} {candidate.evidence_text} {candidate.retrieved_text or ''}")
     player = _text_key(str(event.get("player_name", "")))
     from_club = _text_key(str(event.get("from_club_name", "")))
     to_club = _text_key(str(event.get("to_club_name", "")))
@@ -254,9 +267,10 @@ def assess_event_match(candidate: SourceCandidate, event: dict[str, Any]) -> tup
     if year and year in haystack:
         score += 0.1
         reasons.append("year_match")
+    mentioned_years = set(re.findall(r"\b20\d{2}\b", haystack))
 
-    forward = _has_direction(haystack, from_club, to_club)
-    reverse = _has_direction(haystack, to_club, from_club)
+    forward = _has_direction_any(haystack, from_aliases, to_aliases)
+    reverse = _has_direction_any(haystack, to_aliases, from_aliases)
     loan_return = any(term in haystack for term in ("end of loan", "return from loan", "loan return", "returned to"))
     later_permanent = any(term in haystack for term in ("made permanent", "permanent switch", "permanent transfer")) and "loan" in haystack
     if later_permanent:
@@ -271,12 +285,18 @@ def assess_event_match(candidate: SourceCandidate, event: dict[str, Any]) -> tup
     if loan_return and not forward:
         reasons.append("loan_return_without_target_direction")
         return "mismatch", min(score, 0.35), reasons
+    if forward and year and mentioned_years and year not in mentioned_years:
+        reasons.append("wrong_year_or_date")
+        return "ambiguous", min(score, 0.65), reasons
     hosted_receiving = official_domain_for_club(str(event.get("to_club_name", ""))) == _domain(candidate.source_url)
     transfer_language = any(term in haystack for term in (
         "transfer", "transferred", "signs", "signed", "joins", "joined", "leaves for",
         "e dragao", "é dragão", "cedido ao", "cedido a", "emprestado ao", "emprestado a",
         "transferencia", "transferência", "vertrekt naar", "se marcha al", "rejoint",
     ))
+    if not forward and hosted_receiving and _mentions_transfer_to_other_club(haystack, to_aliases):
+        reasons.append("different_destination_announcement")
+        return "mismatch", min(score, 0.35), reasons
     if not forward and hosted_receiving and transfer_language and player and player in haystack and to_aliases and any(alias in haystack for alias in to_aliases):
         score += 0.18
         reasons.append("receiving_club_official_announcement")
@@ -303,6 +323,27 @@ def _has_direction(text: str, from_club: str, to_club: str) -> bool:
     return any(re.search(pattern, text) for pattern in patterns)
 
 
+def _has_direction_any(text: str, from_aliases: tuple[str, ...], to_aliases: tuple[str, ...]) -> bool:
+    return any(_has_direction(text, from_alias, to_alias) for from_alias in from_aliases for to_alias in to_aliases)
+
+
+def _mentions_transfer_to_other_club(text: str, to_aliases: tuple[str, ...]) -> bool:
+    patterns = (
+        r"\bjoin(?:s|ed|ing)?\s+(?:greek club\s+|club\s+)?([a-z0-9 .'-]{3,80})",
+        r"\bloan(?:ed)?\s+to\s+([a-z0-9 .'-]{3,80})",
+        r"\bpre(?:t|te|ted|tee)\s+(?:au|a|to)\s+([a-z0-9 .'-]{3,80})",
+        r"\brejoint\s+([a-z0-9 .'-]{3,80})",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            destination = match.group(1)
+            if any(alias in destination for alias in to_aliases):
+                continue
+            if any(marker in destination for marker in ("panathinaikos", "roma", "benfica", "porto", "aek", "fenerbahce", "besiktas", "auxerre", "braga")):
+                return True
+    return False
+
+
 def _text_key(text: str) -> str:
     replacements = {
         "á": "a", "à": "a", "ã": "a", "â": "a", "ä": "a",
@@ -326,7 +367,7 @@ def score_source(candidate: SourceCandidate, event: dict[str, Any]) -> float:
         "football_reporting": 35,
         "aggregator": 15,
     }.get(candidate.source_type, 10)
-    haystack = f"{candidate.source_title or ''} {candidate.evidence_text}".lower()
+    haystack = f"{candidate.source_title or ''} {candidate.evidence_text} {candidate.retrieved_text or ''}".lower()
     identity = " ".join(str(event.get(key, "")) for key in ("player_name", "from_club_name", "to_club_name")).lower()
     if event.get("player_name", "").lower() in haystack:
         score += 12
@@ -385,6 +426,25 @@ def assess_source_sufficiency(candidates: list[SourceCandidate]) -> tuple[bool, 
     if len(independent_domains) >= 2:
         return True, ["two independent reputable sources"]
     return False, ["fewer than one strong or two independent reputable accessible sources"]
+
+
+def retrieve_fullpage_for_promising_sources(
+    candidates: list[SourceCandidate],
+    event: dict[str, Any],
+    fetcher: Any | None = None,
+) -> list[SourceCandidate]:
+    """Retrieve known Tier 1/2 result pages before final event matching."""
+    if fetcher is None:
+        from .official_page_retrieval import OfficialPageFetcher
+        fetcher = OfficialPageFetcher()
+    for candidate in candidates:
+        candidate.source_tier = source_tier(candidate)
+        if candidate.source_tier > 2:
+            continue
+        fetcher.apply_to_candidate(candidate)
+        candidate.event_match_status, candidate.event_match_score, candidate.event_match_reasons = assess_event_match(candidate, event)
+        candidate.quality_score = score_source(candidate, event)
+    return deduplicate_sources(candidates)
 
 
 class TavilySearchProvider:
@@ -477,9 +537,18 @@ def _check_accessibility(url: str, timeout: float) -> bool:
         return False
 
 
-def discover_transfer(event: dict[str, Any], provider: SearchProvider) -> SourceDiscoveryResult:
+def discover_transfer(
+    event: dict[str, Any],
+    provider: SearchProvider,
+    *,
+    use_fullpage: bool = True,
+    fullpage_fetcher: Any | None = None,
+) -> SourceDiscoveryResult:
     candidates = provider.search_transfer(event)
-    sufficient, reasons = assess_source_sufficiency(candidates)
+    if use_fullpage:
+        candidates = retrieve_fullpage_for_promising_sources(candidates, event, fullpage_fetcher)
+    admissible = filter_admissible_sources(candidates)
+    sufficient, reasons = assess_source_sufficiency(admissible)
     return SourceDiscoveryResult(candidates, sufficient, reasons)
 
 

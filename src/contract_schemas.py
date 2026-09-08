@@ -28,6 +28,21 @@ class Evidence:
     evidence_text: str
     language: str
     source_tier: int | None = None
+    retrieved_text: str | None = None
+    retrieval_status: str | None = None
+    retrieval_http_status: int | None = None
+    retrieval_final_url: str | None = None
+    retrieval_timestamp: str | None = None
+    retrieval_method: str | None = None
+    retrieval_error: str | None = None
+    content_length: int | None = None
+    event_match_status: str | None = None
+    event_match_score: float | None = None
+    event_match_reasons: list[str] | None = None
+    query_family: str | None = None
+    query_language: str | None = None
+    target_domain: str | None = None
+    query_reason: str | None = None
 
 
 @dataclass
@@ -178,6 +193,7 @@ def _evidence_from_dict(value: Any) -> Evidence:
     missing = required - value.keys()
     if missing:
         raise ValueError(f"source missing fields: {sorted(missing)}")
+    allowed = set(Evidence.__dataclass_fields__)
     return Evidence(
         evidence_id=str(value["evidence_id"]),
         source_url=str(value["source_url"]),
@@ -188,7 +204,10 @@ def _evidence_from_dict(value: Any) -> Evidence:
         retrieval_date=str(value["retrieval_date"]),
         evidence_text=str(value["evidence_text"]),
         language=str(value["language"]),
-        source_tier=value.get("source_tier"),
+        **{key: item for key, item in value.items() if key in allowed - {
+            "evidence_id", "source_url", "source_title", "publisher", "source_type",
+            "publication_date", "retrieval_date", "evidence_text", "language",
+        }},
     )
 
 

@@ -110,8 +110,11 @@ generic event identity, mapped official club domains, mechanism-specific terms,
 and Portuguese-language terms for Portuguese clubs. Search metadata and snippets
 are normalized into `SourceCandidate` records with query-family provenance,
 link accessibility, deterministic source-tier scoring, event-direction matching,
-deduplication, and an evidence-sufficiency gate before extraction. It does not
-extract contract claims or use Transfermarkt as contractual evidence.
+deduplication, targeted full-page retrieval for Tier 1/2 URLs, and an
+evidence-sufficiency gate before extraction. Retrieved page text is cached under
+`data/outputs/contract_research/official_page_cache/` and kept separate from the
+original search snippet for auditability. It does not extract contract claims or
+use Transfermarkt as contractual evidence.
 
 The provider requires a Tavily API key:
 
@@ -127,13 +130,14 @@ calls:
 python -m src.source_discovery --event-id tm_... --dry-run
 ```
 
-A source set is sufficient only when admissible Tier 1/2 evidence establishes
-the exact or likely transfer event identity and then contains one strong
-accessible source or two independent reputable accessible sources. Reverse
-directions, loan-return articles, and later permanent transfers are retained in
-discovery provenance but cannot independently establish contractual fields.
-Without the key, the live provider refuses to search instead of falling back to
-unreliable search-engine HTML scraping.
+A source set is sufficient only after full-page retrieval and updated event
+matching, when admissible Tier 1/2 evidence establishes the exact or likely
+transfer event identity and then contains one strong accessible source or two
+independent reputable accessible sources. Reverse directions, loan-return
+articles, and later permanent transfers are retained in discovery provenance but
+cannot independently establish contractual fields. Without the key, the live
+provider refuses to search instead of falling back to unreliable search-engine
+HTML scraping.
 
 Research status is deliberately conservative:
 

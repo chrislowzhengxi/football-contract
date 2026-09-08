@@ -10,8 +10,10 @@ from src.source_discovery import (
     build_query_plan,
     build_search_queries,
     deduplicate_sources,
+    discover_transfer,
     filter_admissible_sources,
     official_domain_for_club,
+    retrieve_fullpage_for_promising_sources,
     score_source,
     source_tier,
 )
@@ -70,6 +72,31 @@ def test_mechanism_query_uses_unresolved_fields():
     mechanism = [plan.query for plan in plans if plan.family == "mechanism"][0]
     assert "loan fee" in mechanism
     assert "obligation to buy" in mechanism
+
+
+def test_remaining_case_local_language_queries_are_bounded():
+    examples = [
+        ("João Mário", "Besiktas", "Benfica", "pt"),
+        ("Kerem Aktürkoğlu", "Benfica", "Fenerbahçe", "pt"),
+        ("Renato Sanches", "Benfica", "PSG", "pt"),
+        ("Marko Grujić", "Porto", "AEK Athens", "pt"),
+    ]
+    for player, from_club, to_club, language in examples:
+        plans = build_query_plan({
+            "player_name": player,
+            "from_club_name": from_club,
+            "to_club_name": to_club,
+            "transfer_date": "2025-06-30",
+        })
+        assert len(plans) <= 6
+        assert any(plan.family == "local_language" and plan.language == language for plan in plans)
+
+
+def test_official_domains_cover_remaining_case_clubs():
+    assert official_domain_for_club("Besiktas") == "bjk.com.tr"
+    assert official_domain_for_club("Fenerbahçe") == "fenerbahce.org"
+    assert official_domain_for_club("AEK Athens") == "aekfc.gr"
+    assert official_domain_for_club("Al-Ain") == "alainclub.ae"
 
 
 def test_exact_transfer_direction_is_admissible():
@@ -143,6 +170,28 @@ def test_receiving_club_official_rule_still_rejects_reverse_direction():
     status, _, reasons = assess_event_match(item, event)
     assert status == "mismatch"
     assert "reverse_direction" in reasons
+
+
+def test_receiving_club_official_page_for_different_destination_is_rejected():
+    event = {
+        "player_name": "Renato Sanches",
+        "from_club_name": "Benfica",
+        "to_club_name": "PSG",
+        "transfer_date": "2025-06-30",
+    }
+    item = candidate(
+        source_url="https://www.psg.fr/en/content/renato-sanches-loaned-to-panathinaikos-fc",
+        source_type="official",
+        source_title="Renato Sanches loaned to Panathinaikos FC",
+        evidence_text=(
+            "Portuguese midfielder Renato Sanches joins Greek club Panathinaikos FC on loan. "
+            "Last season, he returned on loan to his formative club Benfica. "
+            "He moved to Paris Saint-Germain during the summer transfer window in 2022."
+        ),
+    )
+    status, _, reasons = assess_event_match(item, event)
+    assert status == "mismatch"
+    assert "different_destination_announcement" in reasons
 
 
 def test_later_permanent_transfer_does_not_establish_original_loan_terms():
@@ -270,6 +319,54 @@ def test_tavily_missing_metadata_remains_null(monkeypatch):
     assert result.source_title is None
     assert result.publication_date is None
     assert result.language == "en"
+
+
+def test_normal_discovery_performs_fullpage_before_sufficiency():
+    class Provider:
+        def search_transfer(self, event):
+            return [candidate(
+                source_url="https://www.fcporto.pt/pt/noticias/20250803-pt-luuk-de-jong-e-dragao",
+                source_type="official",
+                source_tier=1,
+                evidence_text="Luuk de Jong é Dragão.",
+                event_match_status="ambiguous",
+                quality_score=80,
+            )]
+
+    class Fetcher:
+        calls = 0
+
+        def apply_to_candidate(self, item):
+            self.calls += 1
+            item.retrieved_text = "Luuk de Jong completed a transfer from PSV to FC Porto in 2025."
+            item.retrieval_status = "success"
+
+    fetcher = Fetcher()
+    result = discover_transfer(
+        {"player_name": "Luuk de Jong", "from_club_name": "PSV", "to_club_name": "Porto", "transfer_date": "2025-08-03"},
+        Provider(),
+        fullpage_fetcher=fetcher,
+    )
+    assert fetcher.calls == 1
+    assert result.sufficient
+    assert result.candidates[0].event_match_status == "exact"
+    assert result.candidates[0].evidence_text == "Luuk de Jong é Dragão."
+
+
+def test_fullpage_retrieval_skips_tier_three_by_default():
+    class Fetcher:
+        calls = 0
+
+        def apply_to_candidate(self, item):
+            self.calls += 1
+
+    fetcher = Fetcher()
+    items = [
+        candidate(source_url="https://www.transfermarkt.com/player", source_type="aggregator", source_tier=3),
+        candidate(source_url="https://www.fcporto.pt/news", source_type="official", source_tier=1),
+    ]
+    retrieve_fullpage_for_promising_sources(items, {"player_name": "Player", "from_club_name": "A", "to_club_name": "B"}, fetcher)
+    assert fetcher.calls == 1
 
 
 def test_tavily_authentication_error_is_safe(monkeypatch):
