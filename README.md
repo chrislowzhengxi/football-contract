@@ -61,7 +61,7 @@ Useful options include `--db PATH`, `--source-url URL`, `--output-dir PATH`, and
 
 ## Contract research pilot
 
-The research stage reads exactly one event from `structured_transfers.csv` and manually supplied source records, sends both to Parley for extraction, validates the structured response, and writes an independent JSON artifact under `data/outputs/contract_research/`. It never overwrites deterministic fields. There is no live or paid search provider in this iteration. `SearchProvider` is an interface-only boundary for a future source-discovery implementation.
+The research stage reads exactly one event from `structured_transfers.csv` and manually supplied source records, sends both to Parley for extraction, validates the structured response, and writes an independent JSON artifact under `data/outputs/contract_research/`. It never overwrites deterministic fields. `SearchProvider` remains separate from Parley so source discovery can be run and audited before extraction.
 
 Parley uses the OpenAI-compatible Chat Completions API. Set the key only in the shell environment and choose a model with `PARLEY_MODEL` or `--model`:
 
@@ -101,6 +101,29 @@ Manual source file format:
 The live Parley request uses `response_format: {"type": "json_object"}`. The result stores provider, model, prompt tokens, completion tokens, Parley's `x-parley-v1-cost` header, and a parsed total request cost when numeric. The API key is never written to the result.
 
 The output contains one object per researched field, plus source records. Each field includes `status`, `confidence`, and `evidence_ids`; evidence includes URL, title, publisher, source type, publication/retrieval dates, excerpt, and language.
+
+## Source discovery
+
+`src/source_discovery.py` provides a real `BraveSearchProvider` behind the
+`SearchProvider` interface. It issues targeted transfer, fee, loan-option,
+obligation, add-on, official-announcement, and sell-on queries; converts only
+search-provider metadata and snippets into `SourceCandidate` records; checks
+link accessibility; scores source quality deterministically; removes duplicate
+or syndicated results; and applies an evidence-sufficiency gate before
+extraction. It does not extract contract claims or use Transfermarkt as
+contractual evidence.
+
+The provider requires a Brave Search API key:
+
+```bash
+export BRAVE_SEARCH_API_KEY="..."
+```
+
+Call `discover_transfer(event, BraveSearchProvider.from_environment())` from
+Python. A source set is sufficient when it contains one strong accessible source
+or two independent reputable accessible sources. Without the key, the layer
+refuses to search instead of falling back to unreliable search-engine HTML
+scraping.
 
 Research status is deliberately conservative:
 

@@ -11,13 +11,19 @@ from urllib.request import Request, urlopen
 import pandas as pd
 
 from .config import DEFAULT_OUTPUT_DIR
-from .contract_schemas import ContractResearchResult, ProviderMetadata, utc_now
+from .contract_schemas import ContractResearchResult, ProviderMetadata, render_model_schema_instructions
 from .source_discovery import SourceCandidate, load_source_candidates
 
 
 class ResearchProvider(Protocol):
     def research(self, event: dict[str, Any], sources: list[SourceCandidate] | None = None) -> ContractResearchResult:
         ...
+
+
+class ProviderFailure(RuntimeError):
+    def __init__(self, message: str, diagnostics: dict[str, Any]):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 class OpenAIWebResearchProvider:
@@ -71,6 +77,18 @@ class ParleyProvider:
         self.prompt = prompt
         self.timeout = timeout
 
+    def _diagnostics(self, payload: dict[str, Any] | None, cost_header: str | None, **extra: Any) -> dict[str, Any]:
+        usage = (payload or {}).get("usage", {})
+        return {
+            "provider": "parley",
+            "model": (payload or {}).get("model", self.model),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "parley_cost_header": cost_header,
+            **extra,
+        }
+
     def research(self, event: dict[str, Any], sources: list[SourceCandidate] | None = None) -> ContractResearchResult:
         if sources is None:
             raise ValueError("ParleyProvider requires manually supplied source records")
@@ -89,20 +107,45 @@ class ParleyProvider:
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
+        payload: dict[str, Any] | None = None
+        cost_header: str | None = None
+        http_status = 200
         try:
             with urlopen(request, timeout=self.timeout) as response:
-                payload = json.load(response)
+                http_status = getattr(response, "status", 200)
                 cost_header = response.headers.get("x-parley-v1-cost")
+                payload = json.loads(response.read())
         except HTTPError as error:
-            detail = error.read().decode(errors="replace")
-            raise RuntimeError(f"Parley provider returned HTTP {error.code}: {detail}") from error
-        result = ContractResearchResult.from_dict({**_completion_json(payload), "event_id": event["event_id"]})
+            raise ProviderFailure(
+                f"Parley provider returned HTTP {error.code}",
+                self._diagnostics(None, error.headers.get("x-parley-v1-cost"), http_status=error.code, failure_stage="http_error"),
+            ) from error
+        except json.JSONDecodeError as error:
+            raise ProviderFailure(
+                "Parley response was not valid JSON",
+                self._diagnostics(None, cost_header, http_status=http_status, failure_stage="response_json", error=str(error)),
+            ) from error
+        try:
+            response_data = {**_completion_json(payload), "event_id": event["event_id"]}
+        except (ValueError, json.JSONDecodeError) as error:
+            raise ProviderFailure(
+                "Parley response JSON could not be extracted",
+                self._diagnostics(payload, cost_header, http_status=http_status, failure_stage="json_parse", error=str(error)),
+            ) from error
+        try:
+            result = ContractResearchResult.from_dict(response_data)
+        except ValueError as error:
+            raise ProviderFailure(
+                "Parley response failed contract schema validation",
+                self._diagnostics(payload, cost_header, http_status=http_status, failure_stage="schema_validation", error=str(error)),
+            ) from error
         usage = payload.get("usage", {})
         result.provider_metadata = ProviderMetadata(
             provider="parley",
             model=payload.get("model", self.model),
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
             parley_cost_header=cost_header,
             total_request_cost=_parse_cost(cost_header),
         )
@@ -116,7 +159,16 @@ def _completion_json(payload: dict[str, Any]) -> dict[str, Any]:
     content = choices[0].get("message", {}).get("content")
     if not isinstance(content, str):
         raise ValueError("Parley response did not contain text JSON content")
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        start, end = content.find("{"), content.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("Parley response did not contain a JSON object") from None
+        try:
+            return json.loads(content[start:end + 1])
+        except json.JSONDecodeError:
+            raise ValueError("Parley response contained malformed JSON") from None
 
 
 def _parse_cost(value: str | None) -> float | None:
@@ -180,14 +232,21 @@ def main() -> None:
         if not args.sources:
             raise SystemExit("--sources is required for Parley research")
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "contract_research.md"
-        provider = ParleyProvider(api_key, args.model, prompt_path.read_text())
+        provider = ParleyProvider(api_key, args.model, prompt_path.read_text() + "\n\n" + render_model_schema_instructions())
     else:
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise SystemExit("OPENAI_API_KEY is required for live research; use --fixture for offline validation")
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "contract_research.md"
         provider = OpenAIWebResearchProvider(api_key, args.model, prompt_path.read_text())
-    output = run(args.event_id, Path(args.events), Path(args.output_dir), provider, Path(args.sources) if args.sources else None)
+    try:
+        output = run(args.event_id, Path(args.events), Path(args.output_dir), provider, Path(args.sources) if args.sources else None)
+    except ProviderFailure as error:
+        failure_dir = Path(args.output_dir) / "failures"
+        failure_dir.mkdir(parents=True, exist_ok=True)
+        failure_path = failure_dir / f"{args.event_id}.json"
+        failure_path.write_text(json.dumps(error.diagnostics, indent=2) + "\n")
+        raise
     print(f"Wrote contract research result to {output}")
 
 
