@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.build_research_dataset import build_research_dataset, coverage
+from src.build_research_dataset import (
+    build_analysis_table,
+    build_audit_table,
+    build_research_dataset,
+    build_review_queue,
+    status_breakdown,
+    tier_metrics,
+)
 from src.contract_schemas import STATUS_VALUES
 
 
@@ -16,6 +23,14 @@ BATCH = ROOT / "data" / "outputs" / "contract_research" / "batch_20_results.json
 
 def dataset():
     return build_research_dataset(STRUCTURED, BATCH)
+
+
+def analysis():
+    return build_analysis_table(dataset())
+
+
+def audit():
+    return build_audit_table(dataset())
 
 
 def test_batch_dataset_has_exactly_20_unique_events():
@@ -86,9 +101,73 @@ def test_build_does_not_modify_deterministic_sources(tmp_path):
         assert path.read_bytes() == contents
 
 
-def test_field_coverage_counts_are_computed_from_statuses():
-    cov = coverage(dataset())
-    assert cov["transfer_type"] == 7
-    assert cov["transfer_fee"] == 5
-    assert cov["loan_fee"] == 5
-    assert cov["purchase_obligation"] == 6
+def test_analysis_table_has_20_unique_rows_and_is_compact():
+    df = analysis()
+    assert len(df) == 20
+    assert df["event_id"].is_unique
+    assert len(df.columns) <= 40
+
+
+def test_analysis_table_excludes_audit_provenance_columns():
+    columns = set(analysis().columns)
+    forbidden = {"source_urls", "source_ids", "provider", "model", "deal_summary", "parley_cost"}
+    assert not (columns & forbidden)
+    assert not any("evidence_ids" in column or "reported_values" in column or "description" in column for column in columns)
+
+
+def test_audit_table_preserves_provenance():
+    df = audit()
+    assert "source_urls" in df
+    assert "provider" in df
+    assert "model" in df
+    assert "researched_transfer_fee_reported_values" in df
+    assert df["source_urls"].notna().sum() == 9
+
+
+def test_review_queue_contains_only_usable_with_review_events():
+    queue = build_review_queue(analysis(), audit())
+    assert len(queue) == 7
+    assert set(queue["event_id"]) == set(analysis().loc[analysis()["classification"] == "usable_with_review", "event_id"])
+    assert "source_urls" in queue
+    assert queue["source_urls"].notna().all()
+
+
+def test_status_breakdown_counts_are_internally_consistent():
+    df = analysis()
+    breakdown = status_breakdown(df)
+    for counts in breakdown.values():
+        total = sum(counts[status] for status in (
+            "disclosed_yes",
+            "disclosed_no",
+            "partially_disclosed",
+            "conflicting_sources",
+            "undisclosed",
+            "not_applicable",
+            "not_found",
+            "unresearched",
+        ))
+        assert total == len(df)
+
+
+def test_not_applicable_is_not_counted_as_usable_value():
+    counts = status_breakdown(analysis())
+    assert counts["loan_fee"]["not_applicable"] > 0
+    assert counts["loan_fee"]["usable_value_count"] == 0
+
+
+def test_explicit_disclosed_no_for_binary_fields_counts_as_usable():
+    counts = status_breakdown(analysis())
+    assert counts["purchase_option"]["disclosed_no"] == 1
+    assert counts["purchase_option"]["usable_value_count"] >= 1
+
+
+def test_numeric_usable_values_require_actual_values():
+    counts = status_breakdown(analysis())
+    assert counts["transfer_fee"]["disclosed_yes"] == 3
+    assert counts["transfer_fee"]["usable_value_count"] == 3
+
+
+def test_admissible_tier2_metrics_use_admissible_artifacts():
+    metrics = tier_metrics(analysis()["event_id"], ROOT / "data" / "outputs" / "discovered_sources")
+    assert metrics["events_with_discovered_tier2"] >= metrics["events_with_admissible_tier2"]
+    assert metrics["events_with_admissible_tier2"] == 7

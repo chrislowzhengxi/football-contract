@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +12,80 @@ from .contract_schemas import FIELD_NAMES, STATUS_VALUES, ContractResearchResult
 
 
 CLASSIFICATIONS = {"clean", "usable_with_review", "insufficient_evidence", "invalid"}
+STATUS_BREAKDOWN = (
+    "disclosed_yes",
+    "disclosed_no",
+    "partially_disclosed",
+    "conflicting_sources",
+    "undisclosed",
+    "not_applicable",
+    "not_found",
+    "unresearched",
+)
+BINARY_FIELDS = {
+    "purchase_option",
+    "purchase_obligation",
+    "sell_on",
+    "buy_back",
+    "release_or_purchase_clause",
+}
+NUMERIC_FIELDS = {"transfer_fee", "loan_fee", "add_ons"}
+ANALYSIS_COLUMNS = [
+    "event_id",
+    "player_name",
+    "player_age_at_transfer",
+    "transfer_date",
+    "season",
+    "departing_club",
+    "receiving_club",
+    "deterministic_transfer_type",
+    "tm_transfer_fee",
+    "tm_market_value_at_signing",
+    "researched_transfer_type",
+    "researched_transfer_type_status",
+    "researched_transfer_fee",
+    "researched_transfer_fee_status",
+    "researched_loan_fee",
+    "researched_loan_fee_status",
+    "researched_add_ons",
+    "researched_add_ons_status",
+    "researched_purchase_option",
+    "researched_purchase_option_status",
+    "researched_purchase_obligation",
+    "researched_purchase_obligation_status",
+    "researched_obligation_trigger",
+    "researched_obligation_trigger_status",
+    "researched_sell_on",
+    "researched_sell_on_status",
+    "researched_buy_back",
+    "researched_buy_back_status",
+    "researched_parent_contract_expiry",
+    "researched_parent_contract_expiry_status",
+    "classification",
+    "review_required",
+    "research_performed",
+    "evidence_sufficient",
+    "discovered_source_count",
+    "admissible_source_count",
+]
+REVIEW_QUEUE_COLUMNS = [
+    "event_id",
+    "player_name",
+    "departing_club",
+    "receiving_club",
+    "transfer_date",
+    "researched_transfer_fee",
+    "researched_transfer_fee_status",
+    "researched_add_ons",
+    "researched_purchase_option",
+    "researched_purchase_obligation",
+    "researched_sell_on",
+    "researched_parent_contract_expiry",
+    "review_reasons",
+    "admissible_source_count",
+    "source_urls",
+    "deal_summary",
+]
 
 
 def _json_text(value: Any) -> str | None:
@@ -140,6 +213,28 @@ def build_research_dataset(
     return dataset
 
 
+def build_analysis_table(raw_dataset: pd.DataFrame) -> pd.DataFrame:
+    missing = set(ANALYSIS_COLUMNS) - set(raw_dataset.columns)
+    if missing:
+        raise ValueError(f"raw dataset missing analysis columns: {sorted(missing)}")
+    analysis = raw_dataset[ANALYSIS_COLUMNS].copy()
+    validate_analysis_table(analysis)
+    return analysis
+
+
+def build_audit_table(raw_dataset: pd.DataFrame) -> pd.DataFrame:
+    return raw_dataset.copy()
+
+
+def build_review_queue(analysis: pd.DataFrame, audit: pd.DataFrame) -> pd.DataFrame:
+    queue = analysis[analysis["classification"] == "usable_with_review"].merge(
+        audit[["event_id", "review_reasons", "source_urls", "deal_summary"]],
+        on="event_id",
+        how="left",
+    )
+    return queue[REVIEW_QUEUE_COLUMNS].copy()
+
+
 def validate_dataset(dataset: pd.DataFrame, batch: dict[str, Any]) -> None:
     if len(dataset) != int(batch["attempted_events"]):
         raise ValueError("dataset row count does not match attempted batch events")
@@ -169,14 +264,78 @@ def validate_dataset(dataset: pd.DataFrame, batch: dict[str, Any]) -> None:
         raise ValueError("researched transfer fee appears backfilled from Transfermarkt")
 
 
+def validate_analysis_table(analysis: pd.DataFrame) -> None:
+    if len(analysis) != 20:
+        raise ValueError("analysis table must contain exactly 20 rows for batch 20")
+    if analysis["event_id"].duplicated().any():
+        raise ValueError("analysis table event_id values are not unique")
+    if len(analysis.columns) > 40:
+        raise ValueError("analysis table is too wide")
+    forbidden = ("source_url", "source_urls", "evidence_ids", "reported_values", "provider", "model", "token")
+    bad = [column for column in analysis.columns if any(marker in column for marker in forbidden)]
+    if bad:
+        raise ValueError(f"analysis table contains audit/provenance columns: {bad}")
+
+
 def coverage(dataset: pd.DataFrame) -> dict[str, int]:
+    return {field_name: counts["usable_value_count"] for field_name, counts in status_breakdown(dataset).items()}
+
+
+def status_breakdown(dataset: pd.DataFrame) -> dict[str, dict[str, int]]:
     counts = {}
     for field_name in FIELD_NAMES:
         status_column = f"researched_{field_name}_status"
         if status_column not in dataset:
             continue
-        counts[field_name] = int(dataset[status_column].isin({"disclosed_yes", "disclosed_no", "partially_disclosed", "undisclosed", "conflicting_sources", "not_applicable"}).sum())
+        value_column = f"researched_{field_name}"
+        field_counts = {status: 0 for status in STATUS_BREAKDOWN}
+        statuses = dataset[status_column]
+        for status in STATUS_BREAKDOWN:
+            if status == "unresearched":
+                field_counts[status] = int(statuses.isna().sum())
+            else:
+                field_counts[status] = int((statuses == status).sum())
+        field_counts["usable_value_count"] = usable_value_count(dataset, field_name, value_column, status_column)
+        counts[field_name] = field_counts
     return counts
+
+
+def usable_value_count(dataset: pd.DataFrame, field_name: str, value_column: str, status_column: str) -> int:
+    statuses = dataset[status_column]
+    values = dataset[value_column] if value_column in dataset else pd.Series([None] * len(dataset), index=dataset.index)
+    if field_name in NUMERIC_FIELDS:
+        return int((statuses.isin({"disclosed_yes", "partially_disclosed", "conflicting_sources"}) & values.notna()).sum())
+    if field_name in BINARY_FIELDS:
+        return int((statuses.isin({"disclosed_yes", "disclosed_no", "partially_disclosed", "conflicting_sources"}) & values.notna()).sum())
+    return int((statuses.isin({"disclosed_yes", "partially_disclosed", "conflicting_sources", "undisclosed"}) & values.notna()).sum())
+
+
+def tier_metrics(event_ids: pd.Series, discovered_dir: Path) -> dict[str, int]:
+    metrics = {
+        "events_with_discovered_tier1": 0,
+        "events_with_discovered_tier2": 0,
+        "events_with_admissible_tier1": 0,
+        "events_with_admissible_tier2": 0,
+    }
+    for event_id in event_ids:
+        discovered = _load_sources(discovered_dir / f"{event_id}.json")
+        admissible = _load_sources(discovered_dir / "admissible" / f"{event_id}.json")
+        if any(source.get("source_tier") == 1 for source in discovered):
+            metrics["events_with_discovered_tier1"] += 1
+        if any(source.get("source_tier") == 2 for source in discovered):
+            metrics["events_with_discovered_tier2"] += 1
+        if any(source.get("source_tier") == 1 for source in admissible):
+            metrics["events_with_admissible_tier1"] += 1
+        if any(source.get("source_tier") == 2 for source in admissible):
+            metrics["events_with_admissible_tier2"] += 1
+    return metrics
+
+
+def _load_sources(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text())
+    return payload.get("sources", payload if isinstance(payload, list) else [])
 
 
 def write_data_dictionary(path: Path, dataset: pd.DataFrame) -> None:
@@ -225,6 +384,43 @@ def write_data_dictionary(path: Path, dataset: pd.DataFrame) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
+def write_analysis_data_dictionary(path: Path, analysis: pd.DataFrame) -> None:
+    meanings = {
+        "event_id": "Stable transfer event identifier.",
+        "player_name": "Player name from the deterministic Transfermarkt backbone.",
+        "player_age_at_transfer": "Age on the transfer date.",
+        "transfer_date": "Transfer event date.",
+        "season": "Transfer season.",
+        "departing_club": "Club the player departed.",
+        "receiving_club": "Club receiving the player.",
+        "deterministic_transfer_type": "Transfer type placeholder from deterministic data when available.",
+        "tm_transfer_fee": "Transfermarkt reported fee; kept separate from researched fee and never used for backfilling.",
+        "tm_market_value_at_signing": "Nearest Transfermarkt market value at signing.",
+        "classification": "Batch-level research classification.",
+        "review_required": "Whether validated extraction requires human review.",
+        "research_performed": "True when a Parley extraction artifact exists.",
+        "evidence_sufficient": "True when admissible evidence passed the sufficiency gate.",
+        "discovered_source_count": "Number of deduplicated discovered sources.",
+        "admissible_source_count": "Number of admissible Tier 1/2 sources retained for extraction.",
+    }
+    lines = ["# Research Dataset Batch 20 Analysis Data Dictionary", "", "| column | meaning | source | expected type | missing-value interpretation |", "| --- | --- | --- | --- | --- |"]
+    for column in analysis.columns:
+        if column.startswith("researched_"):
+            source = "researched"
+            missing = "Blank value means no supported analytic value; status column distinguishes not_found, not_applicable, undisclosed, and unresearched where available."
+            meaning = _default_meaning(column)
+        elif column.startswith("tm_") or column in {"event_id", "player_name", "player_age_at_transfer", "transfer_date", "season", "departing_club", "receiving_club", "deterministic_transfer_type"}:
+            source = "Transfermarkt/deterministic"
+            missing = "Blank means unavailable in deterministic source."
+            meaning = meanings.get(column, column.replace("_", " "))
+        else:
+            source = "derived metadata"
+            missing = "Blank means no extraction artifact exists or metadata is unavailable."
+            meaning = meanings.get(column, column.replace("_", " "))
+        lines.append(f"| {column} | {meaning} | {source} | {analysis[column].dtype} | {missing} |")
+    path.write_text("\n".join(lines) + "\n")
+
+
 def _default_meaning(column: str) -> str:
     if column.startswith("researched_") and column.endswith("_status"):
         return f"Evidence status for {column.removeprefix('researched_').removesuffix('_status')}."
@@ -239,40 +435,39 @@ def _default_meaning(column: str) -> str:
 
 def write_qa_summary(path: Path, dataset: pd.DataFrame, batch: dict[str, Any], discovered_dir: Path) -> None:
     class_counts = dataset["classification"].value_counts().to_dict()
-    cov = coverage(dataset)
-    tier1 = tier2 = 0
-    for event_id in dataset["event_id"]:
-        source_path = discovered_dir / f"{event_id}.json"
-        if not source_path.exists():
-            continue
-        payload = json.loads(source_path.read_text())
-        sources = payload.get("sources", [])
-        if any(source.get("source_tier") == 1 for source in sources):
-            tier1 += 1
-        if any(source.get("source_tier") == 2 for source in sources):
-            tier2 += 1
+    breakdown = status_breakdown(dataset)
+    tiers = tier_metrics(dataset["event_id"], discovered_dir)
     lines = [
         "# Research Dataset Batch 20 QA",
         "",
         f"- Row count: {len(dataset)}",
         f"- Unique events: {dataset['event_id'].nunique()}",
+        f"- Columns in compact analysis table: {len(dataset.columns)}",
         f"- Number researched: {int(dataset['research_performed'].sum())}",
         f"- Number insufficient evidence: {class_counts.get('insufficient_evidence', 0)}",
         f"- Clean: {class_counts.get('clean', 0)}",
         f"- Usable with review: {class_counts.get('usable_with_review', 0)}",
         f"- Invalid: {class_counts.get('invalid', 0)}",
-        f"- Events with at least one Tier 1 source: {tier1}",
-        f"- Events with at least one admissible Tier 2 source: {tier2}",
+        f"- Events with at least one discovered Tier 1 source: {tiers['events_with_discovered_tier1']}",
+        f"- Events with at least one discovered Tier 2 source: {tiers['events_with_discovered_tier2']}",
+        f"- Events with at least one admissible Tier 1 source: {tiers['events_with_admissible_tier1']}",
+        f"- Events with at least one admissible Tier 2 source: {tiers['events_with_admissible_tier2']}",
         f"- Events with no sufficient admissible evidence: {int((~dataset['evidence_sufficient']).sum())}",
         "",
-        "## Field Coverage",
+        "## Field Status Breakdown",
         "",
+        "| field | usable values | disclosed_yes | disclosed_no | partially_disclosed | conflicting_sources | undisclosed | not_applicable | not_found | unresearched |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for field_name, count in cov.items():
-        lines.append(f"- {field_name}: {count}/{len(dataset)} established")
+    for field_name, counts in breakdown.items():
+        lines.append(
+            f"| {field_name} | {counts['usable_value_count']} | {counts['disclosed_yes']} | {counts['disclosed_no']} | "
+            f"{counts['partially_disclosed']} | {counts['conflicting_sources']} | {counts['undisclosed']} | "
+            f"{counts['not_applicable']} | {counts['not_found']} | {counts['unresearched']} |"
+        )
     lines.extend([
         "",
-        "Coverage treats disclosed_yes, disclosed_no, partially_disclosed, undisclosed, conflicting_sources, and not_applicable as established statuses. not_found and unresearched blanks are not counted as established.",
+        "Usable values are intentionally conservative: numeric fields require a supported numeric value, not_applicable and not_found are not counted, and explicit disclosed_no counts only for binary clause fields.",
         "",
         "## Playing-Time Outcomes",
         "",
@@ -286,16 +481,30 @@ def main() -> None:
     parser.add_argument("--structured-transfers", default=str(DEFAULT_OUTPUT_DIR / "structured_transfers.csv"))
     parser.add_argument("--batch-results", default=str(DEFAULT_OUTPUT_DIR / "contract_research" / "batch_20_results.json"))
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT_DIR / "research_dataset_batch_20.csv"))
+    parser.add_argument("--analysis-output", default=str(DEFAULT_OUTPUT_DIR / "research_dataset_batch_20_analysis.csv"))
+    parser.add_argument("--audit-output", default=str(DEFAULT_OUTPUT_DIR / "research_dataset_batch_20_audit.csv"))
+    parser.add_argument("--review-queue-output", default=str(DEFAULT_OUTPUT_DIR / "research_dataset_batch_20_review_queue.csv"))
     parser.add_argument("--data-dictionary", default=str(DEFAULT_OUTPUT_DIR / "research_dataset_batch_20_data_dictionary.md"))
+    parser.add_argument("--analysis-data-dictionary", default=str(DEFAULT_OUTPUT_DIR / "research_dataset_batch_20_analysis_data_dictionary.md"))
     parser.add_argument("--qa-summary", default=str(DEFAULT_OUTPUT_DIR / "research_dataset_batch_20_qa.md"))
     parser.add_argument("--discovered-dir", default=str(DEFAULT_OUTPUT_DIR / "discovered_sources"))
     args = parser.parse_args()
 
     batch = json.loads(Path(args.batch_results).read_text())
     dataset = build_research_dataset(Path(args.structured_transfers), Path(args.batch_results), Path(args.output))
+    analysis = build_analysis_table(dataset)
+    audit = build_audit_table(dataset)
+    review_queue = build_review_queue(analysis, audit)
+    analysis.to_csv(args.analysis_output, index=False)
+    audit.to_csv(args.audit_output, index=False)
+    review_queue.to_csv(args.review_queue_output, index=False)
     write_data_dictionary(Path(args.data_dictionary), dataset)
-    write_qa_summary(Path(args.qa_summary), dataset, batch, Path(args.discovered_dir))
+    write_analysis_data_dictionary(Path(args.analysis_data_dictionary), analysis)
+    write_qa_summary(Path(args.qa_summary), analysis, batch, Path(args.discovered_dir))
     print(f"Wrote {len(dataset)} rows to {args.output}")
+    print(f"Wrote {len(analysis)} rows to {args.analysis_output}")
+    print(f"Wrote {len(audit)} rows to {args.audit_output}")
+    print(f"Wrote {len(review_queue)} rows to {args.review_queue_output}")
 
 
 if __name__ == "__main__":
