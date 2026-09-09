@@ -1,0 +1,52 @@
+{
+  "fixture_kind": "normalized_source_neutral",
+  "source_provider": "Sportmonks Football API",
+  "documentation_basis": "https://docs.sportmonks.com/football/endpoints-and-entities/endpoints/transfers/get-all-transfers",
+  "note": "Offline fixture for the source-fusion interface. It is not a real Sportmonks response.",
+  "events": [
+    {
+      "event_id": "tm_provider_sportmonks",
+      "observations": [
+        {
+          "field": "transfer_type",
+          "value": "permanent",
+          "normalized_value": "permanent",
+          "status": "disclosed_yes",
+          "source_name": "Sportmonks Football API",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_url": "https://docs.sportmonks.com/football/endpoints-and-entities/endpoints/transfers/get-all-transfers",
+          "source_reference": "fixture:sportmonks:transfer:id",
+          "confidence": 0.8,
+          "raw_value": {
+            "id": 1001,
+            "player_id": 2001,
+            "type_id": 1,
+            "from_team_id": 3001,
+            "to_team_id": 3002,
+            "completed": true
+          },
+          "notes": "Docs-compatible normalized observation using transfer id, player/team ids, type_id, and completed flag."
+        },
+        {
+          "field": "transfer_fee",
+          "value": 12000000,
+          "normalized_value": 12000000,
+          "status": "disclosed_yes",
+          "source_name": "Sportmonks Football API",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_url": "https://docs.sportmonks.com/football/endpoints-and-entities/endpoints/transfers/get-all-transfers",
+          "source_reference": "fixture:sportmonks:transfer:amount",
+          "currency": "EUR",
+          "precision": "exact",
+          "confidence": 0.75,
+          "raw_value": {
+            "amount": 12000000
+          },
+          "notes": "Amount semantics and currency basis would need validation against real API access."
+        }
+      ]
+    }
+  ]
+}

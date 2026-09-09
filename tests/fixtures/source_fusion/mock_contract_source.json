@@ -1,0 +1,100 @@
+{
+  "events": [
+    {
+      "event_id": "tm_test_match",
+      "observations": [
+        {
+          "field": "transfer_fee",
+          "value": 7500000,
+          "normalized_value": 7500000,
+          "status": "disclosed_yes",
+          "source_name": "external_contract_source",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_reference": "mock:match",
+          "currency": "EUR",
+          "confidence": 0.95,
+          "raw_value": "EUR 7.5m"
+        }
+      ]
+    },
+    {
+      "event_id": "tm_test_conflict",
+      "observations": [
+        {
+          "field": "transfer_fee",
+          "value": 7500000,
+          "normalized_value": 7500000,
+          "status": "disclosed_yes",
+          "source_name": "external_contract_source",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_reference": "mock:fee-eur",
+          "currency": "EUR",
+          "confidence": 0.95
+        },
+        {
+          "field": "transfer_fee",
+          "value": 8000000,
+          "normalized_value": 8000000,
+          "status": "disclosed_yes",
+          "source_name": "external_contract_source_2",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_reference": "mock:fee-gbp",
+          "currency": "GBP",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "event_id": "tm_test_expiry",
+      "observations": [
+        {
+          "field": "parent_contract_expiry",
+          "value": "2029",
+          "normalized_value": "2029",
+          "status": "disclosed_yes",
+          "source_name": "external_contract_source",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_reference": "mock:expiry-year",
+          "precision": "year",
+          "confidence": 0.9
+        }
+      ]
+    },
+    {
+      "event_id": "tm_test_missing",
+      "observations": [
+        {
+          "field": "sell_on",
+          "value": null,
+          "normalized_value": null,
+          "status": "not_found",
+          "source_name": "external_contract_source",
+          "source_type": "structured_external_candidate",
+          "source_reference": "mock:missing",
+          "confidence": 0.0
+        }
+      ]
+    },
+    {
+      "event_id": "tm_test_tier3",
+      "observations": [
+        {
+          "field": "transfer_fee",
+          "value": 12300000,
+          "normalized_value": 12300000,
+          "status": "disclosed_yes",
+          "source_name": "unreviewed_database",
+          "source_type": "web_research",
+          "source_tier": 3,
+          "source_reference": "mock:tier3",
+          "currency": "EUR",
+          "confidence": 0.8
+        }
+      ]
+    }
+  ]
+}

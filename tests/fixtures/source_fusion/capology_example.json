@@ -1,0 +1,48 @@
+{
+  "fixture_kind": "normalized_source_neutral",
+  "source_provider": "Capology API",
+  "documentation_basis": "https://www.capology.com/documentation/api/v2/get-started/",
+  "note": "Offline fixture for the source-fusion interface. It is not a real Capology response.",
+  "events": [
+    {
+      "event_id": "tm_provider_capology",
+      "observations": [
+        {
+          "field": "parent_contract_expiry",
+          "value": "2028-06-30",
+          "normalized_value": "2028-06-30",
+          "status": "disclosed_yes",
+          "source_name": "Capology API",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_url": "https://www.capology.com/documentation/api/v2/get-started/",
+          "source_reference": "fixture:capology:contracts:contract_end",
+          "precision": "date",
+          "confidence": 0.85,
+          "raw_value": {
+            "contract_until": "2028-06-30"
+          },
+          "notes": "Normalized from documented player contract-information scope."
+        },
+        {
+          "field": "salary",
+          "value": 4500000,
+          "normalized_value": 4500000,
+          "status": "disclosed_yes",
+          "source_name": "Capology API",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_url": "https://www.capology.com/documentation/api/v2/get-started/",
+          "source_reference": "fixture:capology:salaries:gross_annual",
+          "currency": "EUR",
+          "precision": "annual_estimate",
+          "confidence": 0.75,
+          "raw_value": {
+            "gross_annual_salary": 4500000
+          },
+          "notes": "Salary is included because provider docs document salary products; salary is not part of current contract result fields."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "fixture_kind": "normalized_source_neutral",
+  "source_provider": "API-Football",
+  "documentation_basis": "https://www.api-football.com/news/post/how-to-get-started-with-api-football-the-complete-beginners-guide",
+  "note": "Offline fixture for the source-fusion interface. It is not a real API-Football response.",
+  "events": [
+    {
+      "event_id": "tm_provider_api_football",
+      "observations": [
+        {
+          "field": "transfer_type",
+          "value": "permanent",
+          "normalized_value": "permanent",
+          "status": "disclosed_yes",
+          "source_name": "API-Football",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_url": "https://www.api-football.com/news/post/how-to-get-started-with-api-football-the-complete-beginners-guide",
+          "source_reference": "fixture:api-football:transfers:type",
+          "confidence": 0.75,
+          "raw_value": {
+            "type": "€4.5M"
+          },
+          "notes": "Official guide documents transfer type strings that may encode fee, Free, Loan, or N/A."
+        },
+        {
+          "field": "transfer_fee",
+          "value": 4500000,
+          "normalized_value": 4500000,
+          "status": "disclosed_yes",
+          "source_name": "API-Football",
+          "source_type": "structured_external_candidate",
+          "source_tier": 1,
+          "source_url": "https://www.api-football.com/news/post/how-to-get-started-with-api-football-the-complete-beginners-guide",
+          "source_reference": "fixture:api-football:transfers:fee-string",
+          "currency": "EUR",
+          "precision": "formatted_string",
+          "confidence": 0.7,
+          "raw_value": {
+            "type": "€4.5M"
+          },
+          "notes": "Formatted transfer type strings need parser tests before production use."
+        }
+      ]
+    }
+  ]
+}
