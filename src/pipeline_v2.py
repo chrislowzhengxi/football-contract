@@ -26,6 +26,7 @@ from .source_registry import REPUTABLE_TIER2_DOMAINS
 
 EVENT_RESOLUTION_STATUSES = {"confirmed", "likely", "ambiguous", "mismatch", "unresolved"}
 FIELD_EVIDENCE_STATUSES = {"sufficient", "insufficient", "explicit_not_disclosed", "not_applicable", "conflicting"}
+EVIDENCE_EVENT_LINK_STATUSES = {"direct_match", "anchored_match", "related_event_only", "ambiguous", "mismatch"}
 FIELD_RESEARCH_FIELDS = (
     "transfer_fee",
     "loan_fee",
@@ -65,6 +66,21 @@ class RelatedEvent:
     related_event_id: str
     relation_type: str
     reason: str
+
+
+@dataclass
+class EvidenceEventLink:
+    event_id: str
+    source_url: str
+    status: str
+    anchor_evidence_ids: list[str] = field(default_factory=list)
+    field_evidence_id: str | None = None
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.status not in EVIDENCE_EVENT_LINK_STATUSES:
+            raise ValueError(f"invalid evidence event link status: {self.status}")
+        return asdict(self)
 
 
 @dataclass
@@ -174,19 +190,72 @@ def generate_field_queries(
         return rows
 
     phrases = FIELD_VOCABULARY[field_name]
-    for phrase in phrases["en"][:budget.field_basic_max_queries]:
-        rows.append(FieldQueryPlan(event_id, player, "field_basic", field_name, "field_keyword", f"{identity} {phrase}", "en", None, f"field-specific query for {field_name}", 2, number))
-        number += 1
+    english_terms = phrases["en"]
+    shapes = [
+        ("field_basic", "strict_event", f"{identity} {english_terms[0]}", "en", None, f"strict event query for {field_name}"),
+        ("field_basic", "destination_focused", f'"{player}" "{to_club}" {english_terms[min(1, len(english_terms) - 1)]}', "en", None, f"destination-focused query for {field_name}"),
+        ("field_escalation", "origin_focused", f'"{player}" "{from_club}" {english_terms[0]}', "en", None, f"origin-focused query for {field_name}"),
+    ]
     for language in language_codes_for_event(event):
-        if language == "en" or language not in phrases:
-            continue
-        rows.append(FieldQueryPlan(event_id, player, "field_escalation", field_name, "local_language_field", f'"{player}" "{from_club}" "{to_club}" {year} {phrases[language][0]}', language, None, f"{language} vocabulary for {field_name}", 3, number))
-        number += 1
-        break
+        if language != "en" and language in phrases:
+            local_club = to_club or from_club
+            shapes.append(("field_escalation", "local_language", f'"{player}" "{local_club}" {phrases[language][0]}', language, None, f"{language} vocabulary for {field_name}"))
+            break
     domain = official_domain_for_club(to_club) or official_domain_for_club(from_club)
-    if domain and len(rows) < budget.field_basic_max_queries + budget.field_escalation_max_queries + 1:
-        rows.append(FieldQueryPlan(event_id, player, "field_escalation", field_name, "club_domain_field", f'site:{domain} "{player}" {phrases["en"][0]}', "en", domain, f"official-domain field query for {field_name}", 3, number))
+    if domain:
+        shapes.append(("field_escalation", "official_domain", f'site:{domain} "{player}" {english_terms[0]}', "en", domain, f"official-domain field query for {field_name}"))
+    for domain in reputable_domains_for_event(event)[:1]:
+        shapes.append(("field_escalation", "reputable_domain", f'site:{domain} "{player}" {english_terms[0]}', "en", domain, f"Tier 2 domain query for {field_name}"))
+
+    for stage, family, query, language, target_domain, reason in shapes:
+        rows.append(FieldQueryPlan(event_id, player, stage, field_name, family, query, language, target_domain, reason, field_priority(field_name), number))
+        number += 1
     return rows[: budget.field_basic_max_queries + budget.field_escalation_max_queries + 1]
+
+
+def field_priority(field_name: str) -> int:
+    high = {"transfer_fee", "loan_fee", "purchase_option", "purchase_obligation", "parent_contract_expiry"}
+    medium = {"add_ons", "obligation_trigger", "release_or_purchase_clause"}
+    if field_name in high:
+        return 1
+    if field_name in medium:
+        return 2
+    return 3
+
+
+def reputable_domains_for_event(event: dict[str, Any]) -> list[str]:
+    countries = set()
+    for code in language_codes_for_event(event):
+        countries.update({
+            "pt": {"Portugal"},
+            "en": {"England", "Global"},
+            "fr": {"France"},
+            "it": {"Italy"},
+            "tr": {"Turkey"},
+            "el": {"Greece"},
+        }.get(code, set()))
+    return [
+        domain
+        for domain, entry in REPUTABLE_TIER2_DOMAINS.items()
+        if set(entry.countries) & countries or "Global" in entry.countries
+    ]
+
+
+def applicable_research_fields(event: dict[str, Any], established_fields: set[str] | None = None) -> list[str]:
+    established_fields = established_fields or set()
+    transfer_type = str(event.get("transfer_type") or "").lower()
+    fee = event.get("transfer_fee")
+    fields = []
+    for field_name in FIELD_RESEARCH_FIELDS:
+        if field_name in established_fields:
+            continue
+        if field_name == "loan_fee" and "loan" not in transfer_type:
+            continue
+        fields.append(field_name)
+    if fee == 0 and "transfer_fee" in fields:
+        fields.remove("transfer_fee")
+        fields.insert(0, "transfer_fee")
+    return fields
 
 
 def generate_event_query_plan(
@@ -197,10 +266,63 @@ def generate_event_query_plan(
 ) -> list[FieldQueryPlan]:
     established_fields = established_fields or set()
     rows = generate_field_queries(event, "event_resolution", budget=budget)
-    for field_name in FIELD_RESEARCH_FIELDS:
-        rows.extend(generate_field_queries(event, field_name, budget=budget, already_sufficient=field_name in established_fields))
-    rows = rows[: budget.event_total_max_queries]
+    field_queries = {
+        field_name: generate_field_queries(event, field_name, budget=budget)
+        for field_name in applicable_research_fields(event, established_fields)
+    }
+    round_index = 0
+    while len(rows) < budget.event_total_max_queries:
+        added = False
+        for field_name in sorted(field_queries, key=field_priority):
+            queries = field_queries[field_name]
+            if round_index < len(queries):
+                rows.append(queries[round_index])
+                added = True
+                if len(rows) >= budget.event_total_max_queries:
+                    break
+        if not added:
+            break
+        round_index += 1
     return [FieldQueryPlan(**{**row.to_dict(), "estimated_query_number": index}) for index, row in enumerate(rows, start=1)]
+
+
+def link_evidence_to_event(source: SourceCandidate, event_resolution: EventResolution, event: dict[str, Any]) -> EvidenceEventLink:
+    direct_reasons = {
+        "exact": "source directly establishes the selected event",
+        "likely": "source likely establishes the selected event",
+    }
+    reason = direct_reasons.get(source.event_match_status)
+    if reason:
+        status = "direct_match"
+    elif source.event_match_status == "mismatch":
+        status = "mismatch"
+        reason = "source contradicts selected event direction or destination"
+    elif event_resolution.status in {"confirmed", "likely"} and source_mentions_anchor(source, event):
+        status = "anchored_match"
+        reason = "field source safely anchored to resolved event"
+    elif source.event_match_status == "ambiguous":
+        status = "ambiguous"
+        reason = "source does not safely link to the selected event"
+    else:
+        status = "ambiguous"
+        reason = "insufficient anchor signals"
+    return EvidenceEventLink(event_resolution.event_id, source.source_url, status, event_resolution.evidence_ids, source.evidence_id, reason)
+
+
+def source_mentions_anchor(source: SourceCandidate, event: dict[str, Any]) -> bool:
+    text = f"{source.source_title or ''} {source.evidence_text} {source.retrieved_text or ''}".lower()
+    player = str(event.get("player_name", "")).lower()
+    to_club = str(event.get("to_club_name", "")).lower()
+    from_club = str(event.get("from_club_name", "")).lower()
+    year = str(event.get("transfer_date", ""))[:4]
+    reverse_patterns = (
+        f"from {to_club} to {from_club}",
+        f"{from_club} signed {player} from {to_club}",
+        f"joined {from_club} from {to_club}",
+    )
+    if any(pattern in text for pattern in reverse_patterns if pattern.strip()):
+        return False
+    return bool(player and player in text and to_club and to_club in text and (not year or year in text))
 
 
 def assess_field_evidence(field_name: str, field: dict[str, Any], sources: list[dict[str, Any]]) -> FieldEvidenceAssessment:
@@ -257,19 +379,26 @@ def identify_related_events(events: list[dict[str, Any]]) -> list[RelatedEvent]:
         grouped[_club_key(str(event.get("player_name", "")))].append(event)
     relations: list[RelatedEvent] = []
     for player_events in grouped.values():
-        for event in player_events:
+        ordered = sorted(player_events, key=lambda item: str(item.get("transfer_date") or ""))
+        for event in ordered:
             from_club = _club_key(str(event.get("from_club_name", "")))
             to_club = _club_key(str(event.get("to_club_name", "")))
-            for other in player_events:
+            event_date = str(event.get("transfer_date") or "")
+            event_type = str(event.get("transfer_type") or "").lower()
+            for other in ordered:
                 if event["event_id"] == other["event_id"]:
                     continue
                 other_from = _club_key(str(other.get("from_club_name", "")))
                 other_to = _club_key(str(other.get("to_club_name", "")))
-                if from_club == other_to and to_club == other_from:
-                    relation = "reverse_transfer"
+                other_date = str(other.get("transfer_date") or "")
+                other_type = str(other.get("transfer_type") or "").lower()
+                if from_club == other_to and to_club == other_from and other_date >= event_date:
+                    relation = "loan_return" if "loan" in event_type or "loan" in other_type else "reverse_transfer"
                 elif to_club == other_to:
-                    relation = "later_permanent_transfer"
-                elif from_club == other_to:
+                    relation = "later_permanent_transfer" if other_date > event_date else "prior_loan"
+                    if "loan" not in event_type and "loan" not in other_type:
+                        relation = "unrelated_same-club-history"
+                elif from_club == other_to and other_date > event_date:
                     relation = "loan_return"
                 else:
                     continue

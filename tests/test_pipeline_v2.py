@@ -1,14 +1,18 @@
 from src.pipeline_v2 import (
+    EventResolution,
     FIELD_RESEARCH_FIELDS,
     FieldEvidenceAssessment,
     SearchBudget,
     assess_field_evidence,
+    applicable_research_fields,
     generate_event_query_plan,
     generate_field_queries,
     identify_related_events,
     later_fee_supports_prior_option,
+    link_evidence_to_event,
     retrospective_supports_prior_term,
 )
+from src.source_discovery import SourceCandidate, assess_event_match, source_tier
 
 
 def event(**overrides):
@@ -77,10 +81,35 @@ def test_query_budgets_remain_bounded():
     assert {plan.field for plan in plans} <= set(FIELD_RESEARCH_FIELDS) | {"event_resolution"}
 
 
+def test_fair_query_allocation_prevents_late_field_starvation():
+    plans = generate_event_query_plan(event(), budget=SearchBudget(event_total_max_queries=18))
+    fields = {plan.field for plan in plans}
+
+    assert "sell_on" in fields
+    assert "buy_back" in fields
+    assert "release_or_purchase_clause" in fields
+
+
+def test_applicable_field_prioritization_skips_clear_permanent_loan_fee():
+    fields = applicable_research_fields(event(transfer_type="permanent"))
+
+    assert "loan_fee" not in fields
+    assert fields.index("transfer_fee") < fields.index("sell_on")
+
+
+def test_already_sufficient_fields_receive_no_event_queries():
+    plans = generate_event_query_plan(event(), established_fields={"transfer_fee", "sell_on"})
+    planned_fields = {plan.field for plan in plans}
+
+    assert "transfer_fee" not in planned_fields
+    assert "sell_on" not in planned_fields
+
+
 def test_multilingual_field_queries_generated_correctly():
     plans = generate_field_queries(event(player_name="João Mário", from_club_name="Besiktas", to_club_name="Benfica"), "purchase_option")
 
     assert any(plan.language == "pt" and "opção de compra" in plan.query for plan in plans)
+    assert len(plans) <= 4
 
 
 def test_field_search_stops_once_sufficient():
@@ -94,3 +123,55 @@ def test_deterministic_transfer_fee_is_not_a_field_assessment_source():
 
     assert assessment.status == "insufficient"
     assert assessment.evidence_ids == []
+
+
+def test_direct_event_match_is_accepted_as_direct_link():
+    source = SourceCandidate(
+        source_url="https://fcporto.pt/news",
+        source_title="Player joins Porto",
+        publisher="fcporto.pt",
+        publication_date="2025-07-01",
+        source_type="official",
+        evidence_text="Player joined Porto from Benfica in 2025.",
+        language="en",
+        evidence_id="s1",
+    )
+    source.source_tier = source_tier(source)
+    source.event_match_status, _, _ = assess_event_match(source, event())
+    resolution = EventResolution("tm_example", "confirmed", 0.9, ["anchor"])
+
+    assert link_evidence_to_event(source, resolution, event()).status == "direct_match"
+
+
+def test_safe_anchored_field_evidence_is_accepted():
+    source = SourceCandidate(
+        source_url="https://fcporto.pt/news/player-option",
+        source_title="Player option to buy",
+        publisher="fcporto.pt",
+        publication_date="2025-07-01",
+        source_type="official",
+        evidence_text="Player signed for Porto in 2025 with an option to buy.",
+        language="en",
+        evidence_id="s2",
+    )
+    source.event_match_status = None
+    resolution = EventResolution("tm_example", "confirmed", 0.9, ["anchor"])
+
+    assert link_evidence_to_event(source, resolution, event()).status == "anchored_match"
+
+
+def test_reverse_transfer_evidence_is_rejected_for_anchor():
+    source = SourceCandidate(
+        source_url="https://fcporto.pt/news/reverse",
+        source_title="Player reverse transfer",
+        publisher="fcporto.pt",
+        publication_date="2025-07-01",
+        source_type="official",
+        evidence_text="Player joined Benfica from Porto in 2025 with an option.",
+        language="en",
+        evidence_id="s3",
+    )
+    source.event_match_status = "mismatch"
+    resolution = EventResolution("tm_example", "confirmed", 0.9, ["anchor"])
+
+    assert link_evidence_to_event(source, resolution, event()).status == "mismatch"
