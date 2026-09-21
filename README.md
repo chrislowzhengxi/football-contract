@@ -104,3 +104,41 @@ The pipeline checks duplicate event IDs, impossible ages, negative minutes, inva
 ## Data-quality notes
 
 Transfer fee is numeric but does not reliably distinguish permanent, free, or loan terms. The current player contract expiry is not a historical expiry at the transfer date, so it is intentionally not used. Appearance coverage can be incomplete, especially for competitions or dates outside the dataset; the output flags this rather than treating zero rows as zero minutes.
+
+## Stage 1 rebuild (`src/stage1/`)
+
+The pipeline is being rebuilt in independently inspectable stages. Stage 1 is the
+Transfermarkt backbone and nothing else: raw snapshot → normalized transfer events.
+It performs no web search, no retrieval, and no LLM inference.
+
+```bash
+python -m src.stage1.backbone                         # all 175,165 events
+python -m src.stage1.backbone --club Porto --club Benfica --season 24/25 --season 25/26 \
+       --name stage1_normalized_transfers_porto_benfica
+python -m src.stage1.profile                          # profile report
+python -m src.stage1.audit_sample                     # 20-event audit sample
+```
+
+Everything is written under `data/outputs/rebuild/` and nothing under `data/raw/` or
+`data/processed/` is modified.
+
+Column prefixes carry the lineage: `raw_*` is a verbatim Transfermarkt value,
+`joined_*` comes from another raw table by key, `derived_*` was computed here.
+`derived_movement_basis` says whether a movement class rests on an explicit
+Transfermarkt marker, a bare restatement of the fee, or our own heuristic.
+
+Read these before trusting any Stage 1 value:
+
+| Artifact | What it answers |
+| --- | --- |
+| `stage1_transfermarkt_data_lineage.md` | Where every field comes from and what the snapshot cannot provide |
+| `stage1_transfer_type_rules.md` | What the data does and does not let us say about loans, free transfers and fees |
+| `stage1_parser_audit.csv` | Field-by-field audit of the older `src/enrich_structured.py` parser |
+| `stage1_structured_profile.md` | Counts, missingness and anomalies |
+| `stage1_validation_20.md` / `.csv` | 20 stress-test events explained end to end for manual verification |
+
+The legacy deterministic path (`src/select_transfers.py`, `src/enrich_structured.py`)
+is left untouched so earlier outputs stay reproducible. Its known defects are recorded
+in `stage1_parser_audit.csv`; the most consequential are a many-to-many market-value
+merge that duplicates 236 rows, a look-ahead market-value join, and `transfer_type`
+being unconditionally set to `None` because it is listed in `schemas.CONTRACT_FIELDS`.
