@@ -167,3 +167,33 @@ the enrichment adds nothing there and should not overwrite them.
 
 See `stage1b_access_and_scale.md` for the provenance chain, robots.txt findings
 and scale arithmetic.
+
+## Stage 1C — the canonical backbone (`src/stage1c/`)
+
+**This is the frozen Stage 1 output. Downstream stages read this and nothing else.**
+
+```bash
+python -m src.stage1c.build        # data/outputs/rebuild/stage1c_canonical_transfers.csv
+python -m src.stage1c.regression   # 20 named checks against hand-verified cases
+```
+
+Stage 1C joins the Stage 1 DuckDB backbone to the raw Transfermarkt labels
+recovered in Stage 1B. 175,165 events, 100% enrichment coverage, zero requests
+to transfermarkt.com.
+
+Four rules the layer enforces, each covered by tests:
+
+1. A raw Transfermarkt label always beats a Stage 1 heuristic (87.2% of events
+   take their type from a label; the heuristic now decides **none**).
+2. A loan fee and a permanent fee never share a column — `loan_fee_eur`
+   recovers €2.08bn across 2,050 events that the DuckDB records as `0`.
+3. `?` (undisclosed) and `-` (no fee shown) never collapse into each other, and
+   neither becomes zero.
+4. Nothing is deleted. Loan returns stay in the table, flagged, so event chains
+   stay reconstructable — including the 43 return legs that carry a fee.
+
+`is_research_target` (76,701 events, 43.8%) defines the Stage 2 population, and
+every excluded row carries a `research_exclusion_reason`.
+
+Read `stage1c_canonical_data_dictionary.md` for the full column reference, the
+exhaustive fee rules, and the known limitations.
