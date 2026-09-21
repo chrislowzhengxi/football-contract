@@ -51,6 +51,90 @@ class OpenAIWebResearchProvider:
         return ContractResearchResult.from_dict({**_response_json(payload), "event_id": event["event_id"]})
 
 
+class ParleyProvider:
+    """Extract contract terms from supplied evidence through Parley Chat Completions."""
+
+    def __init__(self, api_key: str, model: str, prompt: str, timeout: float = 120):
+        self.api_key = api_key
+        self.model = model
+        self.prompt = prompt
+        self.timeout = timeout
+
+    def _diagnostics(self, payload: dict[str, Any] | None, cost_header: str | None, **extra: Any) -> dict[str, Any]:
+        usage = (payload or {}).get("usage", {})
+        return {
+            "provider": "parley",
+            "model": (payload or {}).get("model", self.model),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "parley_cost_header": cost_header,
+            **extra,
+        }
+
+    def research(self, event: dict[str, Any], sources: list[SourceCandidate] | None = None) -> ContractResearchResult:
+        if sources is None:
+            raise ValueError("ParleyProvider requires manually supplied source records")
+        source_payload = [source.to_dict() for source in sources]
+        request_body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.prompt},
+                {"role": "user", "content": json.dumps({"event": event, "sources": source_payload}, default=str)},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        request = Request(
+            "https://parley.api.mit.edu/v1/chat/completions",
+            data=json.dumps(request_body).encode(),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        payload: dict[str, Any] | None = None
+        cost_header: str | None = None
+        http_status = 200
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                http_status = getattr(response, "status", 200)
+                cost_header = response.headers.get("x-parley-v1-cost")
+                payload = json.loads(response.read())
+        except HTTPError as error:
+            raise ProviderFailure(
+                f"Parley provider returned HTTP {error.code}",
+                self._diagnostics(None, error.headers.get("x-parley-v1-cost"), http_status=error.code, failure_stage="http_error"),
+            ) from error
+        except json.JSONDecodeError as error:
+            raise ProviderFailure(
+                "Parley response was not valid JSON",
+                self._diagnostics(None, cost_header, http_status=http_status, failure_stage="response_json", error=str(error)),
+            ) from error
+        try:
+            response_data = {**_completion_json(payload), "event_id": event["event_id"]}
+        except (ValueError, json.JSONDecodeError) as error:
+            raise ProviderFailure(
+                "Parley response JSON could not be extracted",
+                self._diagnostics(payload, cost_header, http_status=http_status, failure_stage="json_parse", error=str(error)),
+            ) from error
+        try:
+            result = ContractResearchResult.from_dict(response_data)
+        except ValueError as error:
+            raise ProviderFailure(
+                "Parley response failed contract schema validation",
+                self._diagnostics(payload, cost_header, http_status=http_status, failure_stage="schema_validation", error=str(error)),
+            ) from error
+        usage = payload.get("usage", {})
+        result.provider_metadata = ProviderMetadata(
+            provider="parley",
+            model=payload.get("model", self.model),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            parley_cost_header=cost_header,
+            total_request_cost=_parse_cost(cost_header),
+        )
+        return result
+
+
 class FixtureResearchProvider:
     def __init__(self, path: Path):
         self.path = path

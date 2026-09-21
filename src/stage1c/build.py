@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -31,13 +32,22 @@ BACKBONE_CSV = REBUILD_DIR / "stage1_normalized_transfers.csv"
 CANONICAL_CSV = REBUILD_DIR / "stage1c_canonical_transfers.csv"
 SAMPLE_CSV = REBUILD_DIR / "stage1c_validation_sample.csv"
 
-VALIDATION_PLAYERS = [
-    "Silas", "Tiago Serrago", "Idrissa Gueye", "Vitinho", "Raheem Sterling",
-    "Bamba Dieng", "Neymar", "Donyell Malen", "Sergio Ramos", "Kendry Páez",
-    "Artem Stepanov", "Cuiabano", "Stavros Pnevmonidis", "Juan Jose Arias",
-    "Antoine Griezmann", "Kazeem Olaigbe", "Oli Cockle", "Luca Rafaelli",
-    "Roger Fernandes", "Kylian Mbappé",
-]
+AUDIT_CSV = REBUILD_DIR / "stage1_validation_20.csv"
+
+
+def validation_player_ids(path: Path = AUDIT_CSV) -> list[int]:
+    """The player_ids audited in Stage 1, read from the audit sample itself.
+
+    Keyed on player_id, never on name. Transfermarkt has 267 names shared by
+    more than one player: six different footballers are called "Vitinho", and
+    there are two Idrissa Gueyes and two Ladislav Krejcis. Selecting the sample
+    by name silently pulled all of them in and interleaved their careers.
+    """
+    frame = pd.read_csv(path)
+    return sorted({
+        int(re.search(r"player_id=(\d+)", reference).group(1))
+        for reference in frame["raw_record_reference"]
+    })
 
 CANONICAL_COLUMNS = [
     # identity
@@ -354,7 +364,8 @@ def main() -> None:
     # against a Transfermarkt transfer-history page. The full 43-column record
     # for these events is in the canonical file.
     sample_columns = [
-        "player_name", "age_at_transfer", "transfer_season", "transfer_date",
+        "player_id", "player_name", "date_of_birth",
+        "age_at_transfer", "transfer_season", "transfer_date",
         "from_club_name", "to_club_name",
         "fee_display_raw", "transfer_type_raw", "transfer_type_normalized",
         "permanent_transfer_fee_eur", "loan_fee_eur", "fee_on_return_eur",
@@ -364,8 +375,8 @@ def main() -> None:
         "is_research_target", "research_exclusion_reason",
         "transfermarkt_transfer_id", "event_id",
     ]
-    sample = canonical[canonical.player_name.isin(VALIDATION_PLAYERS)].sort_values(
-        ["player_name", "transfer_date"])[sample_columns]
+    sample = canonical[canonical.player_id.isin(validation_player_ids())].sort_values(
+        ["player_id", "transfer_date"])[sample_columns]
     sample.to_csv(output_dir / "stage1c_validation_sample.csv", index=False)
 
     (output_dir / "stage1c_research_population.md").write_text(

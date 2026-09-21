@@ -48,7 +48,7 @@ def build_page_rows(player_ids: set[int], names: dict[int, str]) -> tuple[pd.Dat
         for row in parse_player(player_id, names.get(player_id, ""), response):
             row["source_season_file"] = origin[player_id]
             rows.append(row)
-    frame = pd.DataFrame(rows).sort_values(["player_name", "transfer_date"]).reset_index(drop=True)
+    frame = pd.DataFrame(rows).sort_values(["player_id", "transfer_date"]).reset_index(drop=True)
     coverage = {
         "players_requested": len(player_ids),
         "players_resolved": len(responses),

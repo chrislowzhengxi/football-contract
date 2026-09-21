@@ -306,3 +306,122 @@ def test_permanent_fees_agree_with_the_duckdb_where_comparable(canonical):
     comparable = canonical[canonical.fee_matches_duckdb.notna()]
     assert len(comparable) > 0
     assert comparable.fee_matches_duckdb.astype(bool).all()
+
+
+# ===========================================================================
+# Identity: a name is not an identity
+# ===========================================================================
+#
+# Transfermarkt reuses names heavily. In this snapshot 267 names are shared by
+# more than one player_id, covering 5,023 events. Six different footballers are
+# called "Vitinho"; there are two Idrissa Gueyes and two Ladislav Krejcis.
+# Anything that keys on the name merges real people.
+
+SHARED_NAME_CASES = [
+    ("Vitinho", 6),
+    ("Idrissa Gueye", 2),
+    ("Ladislav Krejci", 2),
+]
+
+
+@pytest.fixture(scope="module")
+def shared_names(canonical):
+    counts = canonical.groupby("player_name").player_id.nunique()
+    return counts[counts > 1]
+
+
+def test_the_snapshot_really_does_reuse_names(canonical, shared_names):
+    # If this ever fails the risk has gone away and the tests below are moot.
+    assert len(shared_names) > 0
+    for name, at_least in SHARED_NAME_CASES:
+        assert name in shared_names.index, name
+        assert shared_names[name] >= at_least, (name, shared_names[name])
+
+
+def test_each_player_id_carries_exactly_one_name(canonical):
+    names_per_id = canonical.groupby("player_id").player_name.nunique()
+    offenders = names_per_id[names_per_id > 1]
+    assert offenders.empty, offenders.to_dict()
+
+
+def test_same_name_players_keep_separate_event_ids(canonical, shared_names):
+    for name in shared_names.index:
+        rows = canonical[canonical.player_name == name]
+        assert not rows.event_id.duplicated().any(), name
+
+
+def test_an_event_chain_never_spans_two_players(canonical):
+    players_per_chain = canonical.groupby("event_chain_id").player_id.nunique()
+    offenders = players_per_chain[players_per_chain > 1]
+    assert offenders.empty, offenders.head(10).to_dict()
+
+
+def test_same_name_players_are_never_chained_together(canonical, shared_names):
+    """The sharp version: for each reused name, no chain mixes its players."""
+    for name in shared_names.index:
+        rows = canonical[canonical.player_name == name]
+        for chain_id, chain in rows.groupby("event_chain_id"):
+            assert chain.player_id.nunique() == 1, (name, chain_id)
+
+
+def test_event_id_distinguishes_two_players_with_one_name():
+    """Two same-name players moving between the same clubs on the same day
+    must still produce different event_ids, because the id hashes player_id."""
+    from src.enrich_structured import stable_event_id
+    a = stable_event_id(670965, "2026-07-01", 338, 6600)
+    b = stable_event_id(213605, "2026-07-01", 338, 6600)
+    assert a != b
+
+
+def test_vitinho_careers_do_not_interleave(canonical):
+    """Six players share this name. Each must have a self-consistent career:
+    every chain belongs to one player and each player has one date of birth."""
+    rows = canonical[canonical.player_name == "Vitinho"]
+    assert rows.player_id.nunique() >= 6
+    assert rows.groupby("player_id").date_of_birth.nunique().le(1).all()
+    assert rows.groupby("event_chain_id").player_id.nunique().eq(1).all()
+
+
+# --- the validation sample must not merge them either ---------------------
+
+SAMPLE = Path("data/outputs/rebuild/stage1c_validation_sample.csv")
+
+
+@pytest.fixture(scope="module")
+def sample():
+    if not SAMPLE.exists():
+        pytest.skip("validation sample not built")
+    return pd.read_csv(SAMPLE)
+
+
+def test_sample_exposes_player_id_prominently(sample):
+    assert "player_id" in sample.columns
+    assert list(sample.columns)[0] == "player_id"
+    assert "date_of_birth" in sample.columns      # lets a human separate namesakes
+
+
+def test_sample_is_selected_by_id_not_by_name(sample, canonical):
+    """The sample must contain exactly the audited players - not every player
+    who happens to share their name."""
+    from src.stage1c.build import validation_player_ids
+    expected = set(validation_player_ids())
+    assert set(sample.player_id) == expected
+    # and exactly their events, no more
+    assert len(sample) == int(canonical.player_id.isin(expected).sum())
+
+
+def test_sample_does_not_pull_in_namesakes(sample, canonical):
+    for name in set(sample.player_name):
+        ids_in_snapshot = set(canonical[canonical.player_name == name].player_id)
+        ids_in_sample = set(sample[sample.player_name == name].player_id)
+        assert len(ids_in_sample) == 1, (name, ids_in_sample)
+        assert ids_in_sample <= ids_in_snapshot
+
+
+def test_sample_is_ordered_by_player_id_then_date(sample):
+    """So two namesakes appear as two contiguous blocks, never interleaved."""
+    key = sample[["player_id", "transfer_date"]]
+    assert key.equals(key.sort_values(["player_id", "transfer_date"]))
+    # each player_id occupies one contiguous run
+    runs = (sample.player_id != sample.player_id.shift()).cumsum().nunique()
+    assert runs == sample.player_id.nunique()

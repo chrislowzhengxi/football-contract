@@ -168,9 +168,10 @@ the enrichment adds nothing there and should not overwrite them.
 See `stage1b_access_and_scale.md` for the provenance chain, robots.txt findings
 and scale arithmetic.
 
-## Stage 1C — the canonical backbone (`src/stage1c/`)
+## Stage 1C — the canonical backbone (`src/stage1c/`) — FROZEN
 
-**This is the frozen Stage 1 output. Downstream stages read this and nothing else.**
+**Frozen 2026-09-21. Downstream stages read this and nothing else.**
+175,165 events, 42 columns, 145 tests, 21 named regression checks.
 
 ```bash
 python -m src.stage1c.build        # data/outputs/rebuild/stage1c_canonical_transfers.csv
@@ -191,6 +192,10 @@ Four rules the layer enforces, each covered by tests:
    neither becomes zero.
 4. Nothing is deleted. Loan returns stay in the table, flagged, so event chains
    stay reconstructable — including the 43 return legs that carry a fee.
+
+5. A name is never an identity. 267 names are shared by more than one player
+   (six different footballers are called "Vitinho"), so every key, join,
+   grouping and event chain uses `player_id`.
 
 `is_research_target` (76,701 events, 43.8%) defines the Stage 2 population, and
 every excluded row carries a `research_exclusion_reason`.

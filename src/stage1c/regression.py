@@ -17,9 +17,38 @@ from ..stage1.backbone import REBUILD_DIR
 from .build import CANONICAL_CSV
 
 
+# Every check selects a player by Transfermarkt player_id, never by name.
+# 267 names in the snapshot are shared by more than one player - there are six
+# different footballers called "Vitinho" and two called "Idrissa Gueye" - so a
+# name-keyed check can silently assert against the wrong human being.
+PLAYER_IDS = {
+    "Silas": 612826,
+    "Tiago Serrago": 1231128,
+    "Idrissa Gueye": 1178488,          # the 2006-born one; 126665 is the Everton player
+    "Vitinho": 670965,                 # one of six players of this name
+    "Raheem Sterling": 134425,
+    "Bamba Dieng": 822458,
+    "Neymar": 68290,
+    "Donyell Malen": 326029,
+    "Sergio Ramos": 25557,
+    "Kendry Páez": 1052439,
+    "Artem Stepanov": 1045344,
+    "Cuiabano": 891353,
+    "Stavros Pnevmonidis": 1077560,
+    "Juan Jose Arias": 989937,
+    "Antoine Griezmann": 125781,
+    "Kazeem Olaigbe": 565406,
+    "Oli Cockle": 1489849,
+    "Luca Rafaelli": 1402952,
+    "Roger Fernandes": 906329,
+    "Kylian Mbappé": 342229,
+    "Ângelo": 743598,
+}
+
+
 def _one(canonical: pd.DataFrame, player: str, date: str | None = None,
          from_club: str | None = None, to_club: str | None = None) -> pd.DataFrame:
-    rows = canonical[canonical.player_name == player]
+    rows = canonical[canonical.player_id == PLAYER_IDS[player]]
     if date:
         rows = rows[rows.transfer_date == date]
     if from_club:
@@ -97,7 +126,7 @@ def run_checks(canonical: pd.DataFrame) -> list[dict]:
     check("Kazeem Olaigbe: the loan, the return and the permanent move are three distinct events",
           "3 rows between Trabzonspor and Konyaspor with 3 distinct event_ids",
           pd.DataFrame([{"n": len(canonical[
-              (canonical.player_name == "Kazeem Olaigbe")
+              (canonical.player_id == PLAYER_IDS["Kazeem Olaigbe"])
               & canonical.from_club_name.isin(["Trabzonspor", "Konyaspor"])
               & canonical.to_club_name.isin(["Trabzonspor", "Konyaspor"])].event_id.unique())}]),
           lambda r: (r.n == 3, f"{r.n} distinct event_ids"))
@@ -205,6 +234,26 @@ def run_checks(canonical: pd.DataFrame) -> list[dict]:
         "observed": f"{len(internal):,} internal rows; "
                     f"{int(internal.is_research_target.sum())} wrongly kept as targets",
         "passed": bool(not internal.is_research_target.any()),
+    })
+
+    # --- identity: names are not unique, ids are ---
+    name_to_ids = canonical.groupby("player_name").player_id.nunique()
+    shared = name_to_ids[name_to_ids > 1]
+    id_to_names = canonical.groupby("player_id").player_name.nunique()
+    chain_players = canonical.groupby("event_chain_id").player_id.nunique()
+    checks.append({
+        "check": "players sharing a name are never merged into one identity",
+        "expected": "each player_id has exactly one name; no event chain spans two player_ids; "
+                    "no duplicate event_id",
+        "observed": f"{len(shared)} names are shared by 2+ players "
+                    f"(worst: {shared.max() if len(shared) else 0} players called "
+                    f"'{shared.idxmax() if len(shared) else '-'}'), covering "
+                    f"{int(canonical.player_name.isin(shared.index).sum()):,} events; "
+                    f"{int((id_to_names > 1).sum())} player_ids carry >1 name; "
+                    f"{int((chain_players > 1).sum())} chains span >1 player_id; "
+                    f"{int(canonical.event_id.duplicated().sum())} duplicate event_ids",
+        "passed": bool((id_to_names <= 1).all() and (chain_players <= 1).all()
+                       and not canonical.event_id.duplicated().any()),
     })
 
     labelled = canonical[canonical.transfer_type_raw.notna()
