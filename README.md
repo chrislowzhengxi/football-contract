@@ -142,3 +142,28 @@ is left untouched so earlier outputs stay reproducible. Its known defects are re
 in `stage1_parser_audit.csv`; the most consequential are a many-to-many market-value
 merge that duplicates 236 rows, a look-ahead market-value join, and `transfer_type`
 being unconditionally set to `None` because it is listed in `schemas.CONTRACT_FIELDS`.
+
+## Stage 1B — Transfermarkt label enrichment (`src/stage1b/`)
+
+Stage 1 found that the DuckDB loses loan fees and every semantic transfer label.
+Stage 1B found *where the loss happens*: a single `else 0` branch in the upstream
+project's `dbt/models/base/transfermarkt_api/base_transfers.sql`. The labels
+survive intact in the upstream project's own **raw** acquisition files, which are
+published on the same public R2 bucket we already download the DuckDB from.
+
+```bash
+python -m src.stage1b.build          # parse + compare on the Stage 1 audit players
+python -m src.stage1b.label_census   # label census across the whole backbone
+```
+
+Measured: **100% of the 175,165 backbone events and all 23,379 players are
+recoverable from three published raw files, with zero requests to
+transfermarkt.com.** This recovers 2,053 loan fees, 16,642 explicitly
+undisclosed (`?`) fees, and a transfer-type label for every event.
+
+The page layer enriches the backbone on `event_id`; it does not replace it.
+Permanent fees, clubs, dates and market values agree 100% with the DuckDB, so
+the enrichment adds nothing there and should not overwrite them.
+
+See `stage1b_access_and_scale.md` for the provenance chain, robots.txt findings
+and scale arithmetic.
