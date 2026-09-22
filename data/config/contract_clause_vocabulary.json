@@ -1,0 +1,578 @@
+{
+  "_doc": "Multilingual football-contract vocabulary. Terms come from the repository's existing query vocabulary plus domain terminology; `evidence_support` counts how many cached documents actually contain each term, so unsupported entries are visible rather than assumed correct. Short core variants were added after the v4 benchmark: matching only long canonical phrases rejected genuinely disclosed terms written as 'sell-on' or 'porcentaje sobre la futura venta'.",
+  "languages": [
+    "de",
+    "el",
+    "en",
+    "es",
+    "fr",
+    "it",
+    "nl",
+    "pt",
+    "ro",
+    "tr"
+  ],
+  "mechanisms": {
+    "purchase_option": {
+      "en": [
+        "buy option",
+        "option to buy",
+        "purchase option",
+        "option to make the deal permanent",
+        "option to make the move permanent"
+      ],
+      "it": [
+        "diritto di riscatto",
+        "riscatto",
+        "diritto di opzione",
+        "opzione di acquisto",
+        "riscattarlo",
+        "riscattare",
+        "riscattato",
+        "decide di riscatt"
+      ],
+      "es": [
+        "opción de compra"
+      ],
+      "pt": [
+        "opção de compra"
+      ],
+      "fr": [
+        "option d'achat"
+      ],
+      "de": [
+        "Kaufoption"
+      ],
+      "tr": [
+        "opsiyon",
+        "satın alma opsiyonu"
+      ],
+      "nl": [
+        "optie tot koop"
+      ],
+      "el": [
+        "οψιόν",
+        "οψιόν αγοράς"
+      ],
+      "ro": [
+        "opțiune de cumpărare"
+      ]
+    },
+    "purchase_obligation": {
+      "en": [
+        "mandatory purchase",
+        "obligation to buy",
+        "obliged to buy",
+        "obligation to make the deal permanent"
+      ],
+      "it": [
+        "obbligo",
+        "obbligo di riscatto",
+        "obbligo di acquisto"
+      ],
+      "es": [
+        "obligación de compra"
+      ],
+      "pt": [
+        "obrigação de compra"
+      ],
+      "fr": [
+        "obligation d'achat"
+      ],
+      "de": [
+        "Kaufpflicht"
+      ],
+      "tr": [
+        "zorunlu satın alma"
+      ],
+      "nl": [
+        "verplichte",
+        "verplichte koopoptie"
+      ],
+      "el": [
+        "υποχρεωτική",
+        "υποχρεωτική αγορά"
+      ],
+      "ro": [
+        "obligație de cumpărare"
+      ]
+    },
+    "buy_back": {
+      "en": [
+        "buy back",
+        "buy-back",
+        "buy-back clause",
+        "buyback",
+        "repurchase",
+        "buyback clause",
+        "buy-back option"
+      ],
+      "it": [
+        "contro-riscatto",
+        "controriscatto",
+        "diritto di recompra",
+        "recompra",
+        "contropzione"
+      ],
+      "es": [
+        "opción de recompra",
+        "recompra"
+      ],
+      "pt": [
+        "opção de recompra",
+        "recompra"
+      ],
+      "fr": [
+        "clause de rachat",
+        "rachat"
+      ],
+      "de": [
+        "Rückkauf",
+        "Rückkaufoption"
+      ],
+      "tr": [
+        "geri alma",
+        "geri alma opsiyonu"
+      ],
+      "nl": [
+        "terugkoop",
+        "terugkoopoptie"
+      ],
+      "el": [
+        "επαναγορά",
+        "ρήτρα επαναγοράς"
+      ],
+      "ro": [
+        "clauză de răscumpărare"
+      ]
+    },
+    "sell_on": {
+      "en": [
+        "future sale",
+        "future transfer fee",
+        "percentage of future sale",
+        "resale",
+        "sell on",
+        "sell-on",
+        "sell-on clause"
+      ],
+      "it": [
+        "futura rivendita",
+        "percentuale sulla",
+        "percentuale sulla futura rivendita",
+        "rivendita"
+      ],
+      "es": [
+        "futura venta",
+        "futuras ventas",
+        "plusvalía",
+        "porcentaje de una futura venta",
+        "porcentaje sobre"
+      ],
+      "pt": [
+        "futura venda",
+        "mais-valia",
+        "percentagem",
+        "percentagem de mais-valia"
+      ],
+      "fr": [
+        "plus-value",
+        "pourcentage à la revente",
+        "revente"
+      ],
+      "de": [
+        "Weiterverkauf",
+        "Weiterverkaufsbeteiligung"
+      ],
+      "tr": [
+        "satıştan pay",
+        "sonraki satış",
+        "sonraki satış payı"
+      ],
+      "nl": [
+        "doorverkoop",
+        "doorverkooppercentage"
+      ],
+      "el": [
+        "μεταπώληση",
+        "ποσοστό μεταπώλησης"
+      ],
+      "ro": [
+        "procent din transfer"
+      ]
+    },
+    "add_ons": {
+      "en": [
+        "add-on",
+        "add-ons",
+        "add-ons bonuses",
+        "bonus",
+        "bonuses",
+        "contingent payments",
+        "incentives",
+        "variables",
+        "value may increase",
+        "may increase of maximum",
+        "on achieving given conditions",
+        "achieving given conditions",
+        "subject to the achievement",
+        "performance-related"
+      ],
+      "it": [
+        "bonus",
+        "al raggiungimento di determinate condizioni",
+        "potrà incrementarsi"
+      ],
+      "es": [
+        "bonus",
+        "variables",
+        "variables bonus"
+      ],
+      "pt": [
+        "bónus"
+      ],
+      "fr": [
+        "bonus"
+      ],
+      "de": [
+        "Boni",
+        "Bonus"
+      ],
+      "tr": [
+        "bonus",
+        "bonuslar"
+      ],
+      "nl": [
+        "bonus",
+        "bonussen"
+      ],
+      "el": [
+        "μπόνους"
+      ],
+      "ro": [
+        "bonusuri"
+      ]
+    },
+    "transfer_fee": {
+      "en": [
+        "transfer fee"
+      ],
+      "it": [
+        "cifra del trasferimento",
+        "costo del cartellino"
+      ],
+      "es": [
+        "traspaso"
+      ],
+      "pt": [
+        "valor da transferência"
+      ],
+      "fr": [
+        "indemnité de transfert"
+      ],
+      "de": [
+        "Ablösesumme"
+      ],
+      "tr": [
+        "bonservis bedeli"
+      ],
+      "nl": [
+        "transfersom"
+      ],
+      "el": [
+        "ποσό μεταγραφής"
+      ]
+    },
+    "loan_fee": {
+      "en": [
+        "loan fee"
+      ],
+      "it": [
+        "prestito oneroso"
+      ],
+      "es": [
+        "cesión con coste"
+      ],
+      "pt": [
+        "empréstimo oneroso"
+      ],
+      "fr": [
+        "prêt payant"
+      ],
+      "de": [
+        "Leihgebühr"
+      ],
+      "tr": [
+        "kiralık bedeli"
+      ],
+      "nl": [
+        "huursom"
+      ],
+      "el": [
+        "δανεισμός με κόστος"
+      ]
+    },
+    "release_clause": {
+      "en": [
+        "buyout clause",
+        "exit clause",
+        "release clause"
+      ],
+      "it": [
+        "clausola rescissoria"
+      ],
+      "es": [
+        "cláusula de rescisión",
+        "opción de salida"
+      ],
+      "pt": [
+        "cláusula de rescisão"
+      ],
+      "fr": [
+        "clause libératoire"
+      ],
+      "de": [
+        "Ausstiegsklausel"
+      ],
+      "tr": [
+        "serbest kalma",
+        "serbest kalma bedeli"
+      ],
+      "nl": [
+        "afkoopclausule"
+      ],
+      "el": [
+        "ρήτρα",
+        "ρήτρα αποδέσμευσης"
+      ]
+    },
+    "termination_compensation": {
+      "en": [
+        "compensation",
+        "compensation to terminate",
+        "loan terminated early",
+        "mutual consent",
+        "terminate",
+        "termination",
+        "termination fee"
+      ],
+      "it": [
+        "rescissione",
+        "rescissione consensuale",
+        "risoluzione",
+        "risoluzione anticipata"
+      ],
+      "es": [
+        "rescisión",
+        "rescisión anticipada",
+        "terminación",
+        "terminación de la cesión"
+      ],
+      "pt": [
+        "rescisão",
+        "rescisão antecipada"
+      ],
+      "fr": [
+        "rupture",
+        "rupture anticipée",
+        "résiliation"
+      ],
+      "de": [
+        "Aufhebung",
+        "Auflösung",
+        "vorzeitige Vertragsauflösung"
+      ],
+      "tr": [
+        "erken fesih",
+        "fesih",
+        "karşılıklı fesih"
+      ],
+      "nl": [
+        "beëindiging",
+        "voortijdige beëindiging"
+      ],
+      "el": [
+        "λύση",
+        "πρόωρη λύση"
+      ]
+    },
+    "transfer_proceeds_share": {
+      "en": [
+        "percentage of the sale",
+        "share of the fee",
+        "share of the transfer",
+        "split the fee"
+      ],
+      "it": [
+        "compartecipazione",
+        "percentuale sulla rivendita",
+        "quota"
+      ],
+      "es": [
+        "parte del traspaso",
+        "reparto"
+      ],
+      "pt": [
+        "parte da venda",
+        "percentagem da venda"
+      ],
+      "fr": [
+        "part sur le transfert"
+      ],
+      "de": [
+        "Beteiligung",
+        "Beteiligung am Transfererlös"
+      ],
+      "tr": [
+        "pay",
+        "satıştan pay"
+      ],
+      "nl": [
+        "deel",
+        "deel van de transfersom"
+      ],
+      "el": [
+        "ποσοστό",
+        "ποσοστό από τη μεταγραφή"
+      ]
+    },
+    "contract_expiry": {
+      "en": [
+        "contract until",
+        "deal until",
+        "signed until"
+      ],
+      "it": [
+        "contratto fino al"
+      ],
+      "es": [
+        "contrato hasta"
+      ],
+      "pt": [
+        "contrato até"
+      ],
+      "fr": [
+        "contrat jusqu'en"
+      ],
+      "de": [
+        "Vertrag bis"
+      ],
+      "tr": [
+        "sözleşme"
+      ],
+      "nl": [
+        "contract tot"
+      ],
+      "el": [
+        "συμβόλαιο έως"
+      ]
+    }
+  },
+  "evidence_support": {
+    "purchase_option": {
+      "en:option to buy": 118,
+      "en:purchase option": 34,
+      "it:diritto di riscatto": 92,
+      "es:opción de compra": 3,
+      "pt:opção de compra": 2,
+      "fr:option d'achat": 8,
+      "tr:satın alma opsiyonu": 22
+    },
+    "purchase_obligation": {
+      "en:mandatory purchase": 5,
+      "en:obligation to buy": 47,
+      "it:obbligo di riscatto": 39,
+      "es:obligación de compra": 1,
+      "fr:obligation d'achat": 1,
+      "tr:zorunlu satın alma": 9
+    },
+    "buy_back": {
+      "en:buy-back clause": 21,
+      "it:controriscatto": 29,
+      "it:diritto di recompra": 3,
+      "fr:clause de rachat": 17
+    },
+    "sell_on": {
+      "en:sell-on clause": 13,
+      "it:percentuale sulla futura rivendita": 9,
+      "es:porcentaje de una futura venta": 2,
+      "fr:pourcentage à la revente": 1
+    },
+    "add_ons": {
+      "it:bonus": 166,
+      "fr:bonus": 166,
+      "de:Boni": 52,
+      "tr:bonuslar": 4
+    },
+    "transfer_fee": {
+      "en:transfer fee": 162,
+      "it:costo del cartellino": 1,
+      "es:traspaso": 16,
+      "fr:indemnité de transfert": 1,
+      "tr:bonservis bedeli": 11
+    },
+    "loan_fee": {
+      "en:loan fee": 58,
+      "it:prestito oneroso": 20
+    },
+    "release_clause": {
+      "en:release clause": 58,
+      "it:clausola rescissoria": 6,
+      "es:cláusula de rescisión": 3,
+      "pt:cláusula de rescisão": 2,
+      "tr:serbest kalma bedeli": 1
+    },
+    "termination_compensation": {
+      "en:compensation to terminate": 2,
+      "en:mutual consent": 10,
+      "en:termination fee": 7,
+      "it:risoluzione anticipata": 1,
+      "fr:résiliation": 1
+    },
+    "transfer_proceeds_share": {
+      "en:split the fee": 1,
+      "it:compartecipazione": 1,
+      "it:percentuale sulla rivendita": 1,
+      "tr:satıştan pay": 3
+    },
+    "contract_expiry": {
+      "en:contract until": 75,
+      "en:deal until": 19,
+      "en:signed until": 4,
+      "it:contratto fino al": 26,
+      "es:contrato hasta": 2,
+      "pt:contrato até": 2,
+      "fr:contrat jusqu'en": 1,
+      "tr:sözleşme": 36
+    }
+  },
+  "corpus_documents_scanned": 1786,
+  "provenance": {
+    "hardening_pass_additions": {
+      "reason": "Terms observed in real cached evidence that the vocabulary did not hold, so the mechanism-term gate rejected genuine clauses: 'diritto di opzione' (Colombo), 'decide di riscattarlo' (Sottil), 'the purchase value may increase ... on achieving given conditions' (Kulusevski, Juventus financial disclosure).",
+      "terms": [
+        "purchase_option:it:diritto di opzione",
+        "purchase_option:it:opzione di acquisto",
+        "purchase_option:it:riscattarlo",
+        "purchase_option:it:riscattare",
+        "purchase_option:it:riscattato",
+        "purchase_option:it:decide di riscatt",
+        "purchase_option:en:option to make the deal permanent",
+        "purchase_option:en:option to make the move permanent",
+        "buy_back:it:contropzione",
+        "buy_back:en:buyback clause",
+        "buy_back:en:buy-back option",
+        "add_ons:en:value may increase",
+        "add_ons:en:may increase of maximum",
+        "add_ons:en:on achieving given conditions",
+        "add_ons:en:achieving given conditions",
+        "add_ons:en:subject to the achievement",
+        "add_ons:en:performance-related",
+        "add_ons:it:al raggiungimento di determinate condizioni",
+        "add_ons:it:potrà incrementarsi",
+        "purchase_obligation:en:obligation to make the deal permanent",
+        "purchase_obligation:it:obbligo di acquisto"
+      ]
+    }
+  }
+}

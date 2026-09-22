@@ -58,16 +58,28 @@ CARRIED_FORWARD = [
                    ("original_loan", "loan_return")),
     MechanismField("sell_on", "Share of a future onward sale retained by a former club",
                    ("percentage", "basis", "cap"), True, True,
-                   ("permanent_transfer", "loan_return", "third_party_sale")),
+                   # original_loan included deliberately: a loan agreement that
+                   # contemplates a permanent move often fixes the selling
+                   # club's future-sale percentage in the same document.
+                   ("original_loan", "permanent_transfer", "loan_return",
+                    "third_party_sale")),
     MechanismField("buy_back", "Right of a selling club to repurchase",
                    ("price", "currency", "window", "exercised"), False, True,
-                   ("permanent_transfer", "loan_return")),
+                   # original_loan included deliberately: the standard Italian
+                   # structure "prestito con diritto di riscatto e
+                   # controriscatto" writes the host club's option AND the
+                   # parent's buy-back into the loan contract itself, so both
+                   # Colombo's and Sottil's buy-backs live on the loan leg.
+                   ("original_loan", "permanent_transfer", "loan_return")),
     MechanismField("add_ons", "Contingent payments on top of a base fee",
                    ("amount", "currency", "conditions"), True, False,
                    ("permanent_transfer", "original_loan", "third_party_sale")),
     MechanismField("parent_contract_expiry", "Expiry of the player's contract with the parent club",
                    ("date",), False, False,
-                   ("original_loan", "loan_return", "permanent_transfer")),
+                   # A contract length is routinely stated when a player signs,
+                   # including on an onward sale to a third club.
+                   ("original_loan", "loan_return", "permanent_transfer",
+                    "third_party_sale", "early_termination")),
     MechanismField("release_or_purchase_clause", "Fixed price at which the club must let the player go",
                    ("price", "currency"), False, True, ("permanent_transfer",)),
 ]
@@ -79,7 +91,11 @@ NEW_MECHANISMS = [
         "Payment to end a loan or contract before its scheduled expiry. Distinct "
         "from a transfer fee and from a loan fee.",
         ("amount", "currency"), True, True,
-        ("early_termination", "loan_return")),
+        # permanent_transfer included deliberately: where a player terminates
+        # his contract and joins another club, the compensation attaches to
+        # that departure. Rafael Leao's move to Lille is the type case - the
+        # CAS award is about exactly this leg.
+        ("early_termination", "loan_return", "permanent_transfer")),
     MechanismField(
         "third_party_sale_share",
         "A club's entitlement to part of the consideration paid by a THIRD club. "
@@ -146,7 +162,16 @@ def admissible(field_name: str, payload: dict, event_role: str) -> tuple[bool, l
     if spec.requires_quote and not (payload.get("quote") or payload.get("evidence_span")):
         problems.append("mechanism requires an explicit quoted term")
     if spec.requires_direction and not payload.get("direction_established"):
-        problems.append("amount carried without an established payer/recipient")
+        # Direction is only meaningful for money that actually moved between two
+        # identified clubs. A contingent percentage - "Malaga retain 50% of any
+        # future sale" - has no payer at the time it is agreed, because the
+        # future buyer is unknown. Demanding one rejected genuinely disclosed
+        # sell-on terms. So: a concrete amount needs a direction; a
+        # percentage-only entitlement needs a named beneficiary instead.
+        has_amount = payload.get("amount") is not None or payload.get("price") is not None
+        beneficiary = payload.get("recipient") or payload.get("beneficiary")
+        if has_amount or not (payload.get("percentage") is not None or beneficiary):
+            problems.append("amount carried without an established payer/recipient")
     if spec.attaches_to_roles and event_role not in spec.attaches_to_roles:
         problems.append(
             f"'{field_name}' does not sensibly attach to a leg with role "

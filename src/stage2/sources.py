@@ -118,9 +118,37 @@ DOMAIN_CLASS: dict[str, str] = {
     "bundesliga.com": "league_or_federation", "ligue1.com": "league_or_federation",
     "laliga.com": "league_or_federation", "tff.org": "league_or_federation",
     "fifa.com": "league_or_federation", "uefa.com": "league_or_federation",
+    # Added after the cache audit: these carried clause language in the local
+    # corpus but were falling through to "unknown", so they were neither
+    # prioritised nor correctly tiered.
+    "goal.com": "national_media_major",
+    "sempremilan.com": "local_club_media", "sempreinter.com": "local_club_media",
+    "violanation.com": "local_club_media", "chiesaditotti.com": "local_club_media",
+    "sport.sky.it": "transfer_specialist",
+    "sportmediaset.mediaset.it": "national_media_major",
+    "tuttomercatoweb.com": "transfer_specialist",
+    "calciomercato.com": "transfer_specialist",
+    "footballitalia.net": "national_media_major",
+    "ouest-france.fr": "national_media_major",
+    "surinenglish.com": "national_media_major",
+    "espn.com": "national_media_major", "espn.co.uk": "national_media_major",
+    "nytimes.com": "national_media_major", "bbc.com": "national_media_major",
+    "flashscore.com": "structured_data_provider",
+    "capology.com": "structured_data_provider",
+    "transferfeed.com": "aggregator_low_quality",
+    "sortitoutsi.net": "aggregator_low_quality",
+    "aiscore.com": "aggregator_low_quality", "m.aiscore.com": "aggregator_low_quality",
+    "transfermarkt.us": "transfermarkt_backbone",
+    "transfermarkt.it": "transfermarkt_backbone",
+    "transfermarkt.es": "transfermarkt_backbone",
+    "tas-cas.org": "league_or_federation",
     # archives
     "web.archive.org": "archived_retrospective",
 }
+
+SOCIAL_DOMAINS = ("facebook.com", "youtube.com", "instagram.com", "x.com",
+                  "twitter.com", "tiktok.com", "threads.com", "threads.net",
+                  "linkedin.com", "pinterest")
 
 LOW_QUALITY_MARKERS = (
     "sportskeeda", "givemesport", "footballtransfers", "caughtoffside",
@@ -161,6 +189,9 @@ def disclosure_venue(club_name: str | None) -> tuple[str, str] | None:
 
 def classify(url: str, from_club: str | None, to_club: str | None) -> str:
     """Assign a source_class to a URL, using the event's two clubs for context."""
+    _d = domain_of(url)
+    if any(_d == sd or _d.endswith("." + sd) for sd in SOCIAL_DOMAINS):
+        return "aggregator_low_quality"
     domain = domain_of(url)
     if not domain:
         return "unknown"

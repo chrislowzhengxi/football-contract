@@ -44,10 +44,23 @@ EVENT_ROLES = (
     "third_party_sale", "administrative_return", "internal_registration", "unknown",
 )
 
+# Family classes span the whole Stage 1C population, not just loan returns.
+# The first four describe families whose anchor is NOT a return leg; the module
+# originally had only the return-anchored classes, so a standalone permanent
+# transfer fell through to "likely_negotiated_return" and was described in the
+# notes as a "return".
 FAMILY_CLASSES = (
+    "standalone_permanent_transfer", "standalone_loan", "loan_family",
     "likely_negotiated_return", "early_termination", "immediate_follow_on_transfer",
     "third_party_sale_related", "administrative_return", "unresolved_family_semantics",
 )
+
+# Classes whose anchor is a return leg. Only these may carry the return-leg
+# role refinements and the fee_on_return caveat.
+RETURN_ANCHORED_CLASSES = frozenset({
+    "likely_negotiated_return", "early_termination", "immediate_follow_on_transfer",
+    "third_party_sale_related", "administrative_return",
+})
 
 
 def _family_id(player_id, seed_event_id: str) -> str:
@@ -78,12 +91,55 @@ class Family:
     notes: str = ""
 
 
-def build_families(canonical: pd.DataFrame, target_event_ids: list[str]) -> dict[str, Family]:
-    """One family per target loan-return event.
+def _anchor_role_for(transfer_type: str) -> str:
+    """The anchor's role comes from its own Stage 1 type.
 
-    Anchored on return legs because that is the population Stage 2 selected. The
-    family is: the originating loan, the return, and follow-on movements close
-    enough in time to belong to the same episode.
+    This module was written for loan-return anchors and defaulted every anchor
+    to "loan_return", which mislabelled permanent transfers and loans once the
+    layer was pointed at the wider research population.
+    """
+    return {
+        "loan_return": "loan_return", "loan": "original_loan",
+        "permanent_transfer": "permanent_transfer",
+        "free_transfer": "permanent_transfer",
+        "undisclosed_transfer": "permanent_transfer",
+        "no_fee_shown": "permanent_transfer",
+        "youth_or_internal": "internal_registration",
+    }.get(str(transfer_type), "unknown")
+
+
+def _follow_on_role(f, pivot_from_club_id) -> str:
+    """Role of a movement that happens after the pivot leg."""
+    if f.transfer_type_normalized == "youth_or_internal" or f.get("is_internal_move"):
+        return "internal_registration"
+    if f.transfer_type_normalized in PERMANENT_TYPES:
+        # A sale back to the club that held the player on loan is the
+        # option/counter-option story; a sale to anyone else makes the pivot a
+        # conduit for a third party's money.
+        return ("permanent_transfer" if f.to_club_id == pivot_from_club_id
+                else "third_party_sale")
+    if f.transfer_type_normalized in LOAN_TYPES:
+        return "original_loan"          # seeds the next family
+    return "unknown"
+
+
+def build_families(canonical: pd.DataFrame, target_event_ids: list[str]) -> dict[str, Family]:
+    """One family per target event, whatever kind of event it is.
+
+    The family is the set of rows belonging to the same economic episode. Which
+    rows those are depends on what the anchor is:
+
+      * a return leg  -> the originating loan, the return, and movements close
+                         after the return;
+      * a loan        -> the loan, its own return leg, and movements close after
+                         that return;
+      * a permanent   -> the transfer, any loan of the player AT the buying club
+                         that it converts, and movements close after it.
+
+    Anchoring on the return leg only was correct for the population Stage 2
+    first selected and wrong for everything else: a loan anchor was given no
+    return leg, so it looked standalone, and a permanent anchor was handed the
+    return-leg classifier.
     """
     df = canonical.copy()
     df["_date"] = pd.to_datetime(df["transfer_date"], errors="coerce")
@@ -94,43 +150,66 @@ def build_families(canonical: pd.DataFrame, target_event_ids: list[str]) -> dict
         row = df[df.event_id == eid]
         if row.empty:
             continue
-        ret = row.iloc[0]
-        chain = by_player[ret.player_id]
-        rdate = ret._date
+        anchor = row.iloc[0]
+        chain = by_player[anchor.player_id]
+        adate = anchor._date
+        atype = str(anchor.transfer_type_normalized)
+        anchor_role = _anchor_role_for(atype)
 
-        # --- originating loan: latest prior loan with reversed clubs ---
-        prior = chain[(chain._date <= rdate) & (chain.event_id != eid)
-                      & (chain.transfer_type_normalized.isin(LOAN_TYPES))
-                      & (chain.to_club_id == ret.from_club_id)
-                      & (chain.from_club_id == ret.to_club_id)]
-        prior = prior[(rdate - prior._date).dt.days <= MAX_LOAN_DAYS]
-        loan = prior.iloc[-1] if len(prior) else None
-
-        fam = Family(_family_id(ret.player_id, eid), ret.player_id)
+        loan = None           # originating loan, when there is one
+        ret = None            # the return leg, when there is one
+        pivot = anchor        # the leg that follow-ons are measured from
         ordered = []
-        if loan is not None:
-            ordered.append((loan._date, loan.event_id, "original_loan"))
-        ordered.append((rdate, eid, "loan_return"))
 
-        # --- follow-on movements after the return ---
-        after = chain[(chain._date > rdate)
-                      & ((chain._date - rdate).dt.days <= FOLLOW_ON_WINDOW_DAYS)]
+        if atype in RETURN_TYPES:
+            # --- originating loan: latest prior loan with reversed clubs ---
+            prior = chain[(chain._date <= adate) & (chain.event_id != eid)
+                          & (chain.transfer_type_normalized.isin(LOAN_TYPES))
+                          & (chain.to_club_id == anchor.from_club_id)
+                          & (chain.from_club_id == anchor.to_club_id)]
+            prior = prior[(adate - prior._date).dt.days <= MAX_LOAN_DAYS]
+            loan = prior.iloc[-1] if len(prior) else None
+            ret = anchor
+            if loan is not None:
+                ordered.append((loan._date, loan.event_id, "original_loan"))
+
+        elif atype in LOAN_TYPES:
+            # --- the loan's own return leg, if it has happened yet ---
+            loan = anchor
+            after = chain[(chain._date > adate)
+                          & (chain.transfer_type_normalized.isin(RETURN_TYPES))
+                          & (chain.from_club_id == anchor.to_club_id)
+                          & (chain.to_club_id == anchor.from_club_id)]
+            after = after[(after._date - adate).dt.days <= MAX_LOAN_DAYS]
+            if len(after):
+                ret = after.iloc[0]
+                ordered.append((ret._date, ret.event_id, "loan_return"))
+                pivot = ret
+
+        else:
+            # --- a permanent move may convert a loan the player is already on ---
+            prior = chain[(chain._date < adate) & (chain.event_id != eid)
+                          & (chain.transfer_type_normalized.isin(LOAN_TYPES))
+                          & (chain.to_club_id == anchor.to_club_id)]
+            prior = prior[(adate - prior._date).dt.days <= MAX_LOAN_DAYS]
+            if len(prior):
+                loan = prior.iloc[-1]
+                ordered.append((loan._date, loan.event_id, "original_loan"))
+
+        fam = Family(_family_id(anchor.player_id, eid), anchor.player_id)
+        ordered.append((adate, eid, anchor_role))
+
+        # --- follow-on movements after the pivot leg ---
+        pdate = pivot._date
+        seen = {e for _, e, _ in ordered}
+        after = chain[(chain._date > pdate)
+                      & ((chain._date - pdate).dt.days <= FOLLOW_ON_WINDOW_DAYS)
+                      & (~chain.event_id.isin(seen))]
         follow = []
         for _, f in after.iterrows():
-            gap = (f._date - rdate).days
-            if f.transfer_type_normalized == "youth_or_internal" or f.get("is_internal_move"):
-                role = "internal_registration"
-            elif f.transfer_type_normalized in PERMANENT_TYPES:
-                # A sale back to the loan club is the option/counter-option story;
-                # a sale to anyone else makes the return a conduit.
-                role = ("permanent_transfer" if f.to_club_id == ret.from_club_id
-                        else "third_party_sale")
-            elif f.transfer_type_normalized in LOAN_TYPES:
-                role = "original_loan"          # seeds the next family
-            else:
-                role = "unknown"
-            follow.append({"event_id": f.event_id, "gap": gap, "role": role,
-                           "type": f.transfer_type_normalized,
+            role = _follow_on_role(f, pivot.from_club_id)
+            follow.append({"event_id": f.event_id, "gap": (f._date - pdate).days,
+                           "role": role, "type": f.transfer_type_normalized,
                            "to_club_id": f.to_club_id, "to_club": f.to_club_name,
                            "date": f._date})
             ordered.append((f._date, f.event_id, role))
@@ -141,23 +220,51 @@ def build_families(canonical: pd.DataFrame, target_event_ids: list[str]) -> dict
         fam.start_date = min(d for d, _, _ in ordered)
         fam.end_date = max(d for d, _, _ in ordered)
 
-        _classify(fam, ret, loan, follow, rdate)
+        _classify(fam, anchor, loan, ret, follow, pdate)
         families[eid] = fam
     return families
 
 
-def _classify(fam: Family, ret, loan, follow: list, rdate) -> None:
-    """Assign the family classification and refine the return leg's role.
+def _classify(fam: Family, anchor, loan, ret, follow: list, pdate) -> None:
+    """Label the family, and refine the return leg's role where there is one.
 
-    Priority order matters: a third-party sale explains the return more
-    specifically than 'there was a follow-on', so it is tested first.
+    Dispatches on what the anchor actually is. The return-leg branch is the
+    original logic, unchanged in behaviour; the other branches exist because
+    applying it to a permanent transfer produced the contradiction of a
+    `permanent_transfer` row classified `likely_negotiated_return` and
+    described in the notes as a "return".
     """
-    season_end = _days_from_season_end(rdate) <= SEASON_END_TOLERANCE_DAYS
+    is_return = str(anchor.transfer_type_normalized) in RETURN_TYPES
+    is_loan = str(anchor.transfer_type_normalized) in LOAN_TYPES
+
+    season_end = _days_from_season_end(pdate) <= SEASON_END_TOLERANCE_DAYS
     immediate = [f for f in follow if f["gap"] <= FOLLOW_ON_IMMEDIATE_DAYS]
     windowed = [f for f in follow if f["gap"] <= FOLLOW_ON_WINDOW_DAYS]
     third_party = [f for f in windowed if f["role"] == "third_party_sale"]
     back_to_loan_club = [f for f in windowed if f["role"] == "permanent_transfer"]
 
+    if is_return:
+        _classify_return_anchor(fam, anchor, loan, follow, pdate, season_end,
+                                immediate, windowed, third_party, back_to_loan_club)
+    elif is_loan:
+        _classify_loan_anchor(fam, anchor, ret, windowed, third_party)
+    else:
+        _classify_permanent_anchor(fam, anchor, loan, immediate, windowed, third_party)
+
+    # The fee_on_return caveat belongs to return legs. A permanent transfer has
+    # no fee_on_return to misread.
+    if (fam.classification in ("third_party_sale_related", "early_termination",
+                               "immediate_follow_on_transfer")
+            and fam.classification in RETURN_ANCHORED_CLASSES and is_return):
+        fam.review_required = True
+        fam.review_reasons.append(
+            "fee_on_return_eur should not be read as a bilateral transfer price here")
+
+
+def _classify_return_anchor(fam, ret, loan, follow, rdate, season_end, immediate,
+                            windowed, third_party, back_to_loan_club) -> None:
+    """Original return-leg logic. Priority order matters: a third-party sale
+    explains the return more specifically than 'there was a follow-on'."""
     if loan is None:
         fam.review_required = True
         fam.review_reasons.append("no originating loan found within %d days" % MAX_LOAN_DAYS)
@@ -214,11 +321,76 @@ def _classify(fam: Family, ret, loan, follow: list, rdate) -> None:
         fam.review_required = True
         fam.review_reasons.append("follow-on exists but does not match a known pattern")
 
-    if fam.classification in ("third_party_sale_related", "early_termination",
-                              "immediate_follow_on_transfer"):
+
+def _classify_loan_anchor(fam, anchor, ret, windowed, third_party) -> None:
+    """A loan. Either its return leg is known, or the loan is still open."""
+    if third_party:
+        f = third_party[0]
+        fam.classification = "third_party_sale_related"
+        fam.notes = (f"Loan to {anchor.to_club_name}; after the return the parent sold "
+                     f"the player to a third club ({f['to_club']}) {f['gap']}d later.")
+        return
+    if ret is None:
+        fam.classification = "standalone_loan"
+        fam.notes = (f"Loan from {anchor.from_club_name} to {anchor.to_club_name} with no "
+                     f"return leg recorded within {MAX_LOAN_DAYS}d. Any option, obligation "
+                     f"or buy-back agreed on this loan belongs to THIS leg.")
         fam.review_required = True
         fam.review_reasons.append(
-            "fee_on_return_eur should not be read as a bilateral transfer price here")
+            f"no return leg found within {MAX_LOAN_DAYS}d; the loan may still be "
+            "running, or the return may be missing from Stage 1")
+        return
+    bought = [f for f in windowed if f["role"] == "permanent_transfer"]
+    if bought:
+        f = bought[0]
+        fam.classification = "likely_negotiated_return"
+        fam.notes = (f"Loan to {anchor.to_club_name}, returned, then transferred back to "
+                     f"{f['to_club']} {f['gap']}d later - consistent with an option or "
+                     f"counter-option being settled. Mechanism NOT asserted.")
+        return
+    fam.classification = "loan_family"
+    fam.notes = (f"Loan from {anchor.from_club_name} to {anchor.to_club_name} and its "
+                 f"return on {ret.transfer_date}. Terms agreed for the loan attach to "
+                 f"the loan leg, not the return.")
+
+
+def _classify_permanent_anchor(fam, anchor, loan, immediate, windowed, third_party) -> None:
+    """A permanent, free or undisclosed transfer. Never a 'return'."""
+    if third_party:
+        f = third_party[0]
+        fam.classification = "third_party_sale_related"
+        fam.notes = (f"{anchor.from_club_name} -> {anchor.to_club_name} followed "
+                     f"{f['gap']}d later by an onward sale to {f['to_club']}.")
+        fam.review_required = True
+        fam.review_reasons.append(
+            "an onward sale follows this transfer closely; terms may belong to either leg")
+        return
+    if immediate:
+        f = immediate[0]
+        fam.classification = "immediate_follow_on_transfer"
+        fam.notes = (f"{anchor.from_club_name} -> {anchor.to_club_name} immediately "
+                     f"followed by a further move ({f['type']} to {f['to_club']}, "
+                     f"{f['gap']}d).")
+        fam.review_required = True
+        fam.review_reasons.append(
+            "a further movement follows within "
+            f"{FOLLOW_ON_IMMEDIATE_DAYS}d; the two legs may be one negotiation")
+        return
+    if loan is not None:
+        fam.classification = "loan_family"
+        fam.notes = (f"Permanent move to {anchor.to_club_name} following a loan at the "
+                     f"same club that began {loan.transfer_date}; consistent with a "
+                     f"purchase option or obligation being settled. Mechanism NOT asserted.")
+        return
+    if windowed:
+        fam.classification = "unresolved_family_semantics"
+        fam.review_required = True
+        fam.review_reasons.append("follow-on exists but does not match a known pattern")
+        return
+    fam.classification = "standalone_permanent_transfer"
+    fam.notes = (f"Standalone {str(anchor.transfer_type_normalized).replace('_', ' ')} "
+                 f"from {anchor.from_club_name} to {anchor.to_club_name} with no related "
+                 f"movement nearby. Terms attach to this leg.")
 
 
 def families_to_rows(families: dict[str, Family], canonical: pd.DataFrame) -> pd.DataFrame:

@@ -1,0 +1,384 @@
+{
+  "_doc": "Source quality by identity, never by which provider found the URL. An unknown domain is retrieved, read and classified - never discarded. Tier 1 may establish a term alone; tier 2 needs explicit wording; tier 3 is leads-only and can never establish a contractual term.",
+  "tiers": {
+    "1": [
+      "official_club_buying",
+      "official_club_selling",
+      "official_club_other",
+      "financial_disclosure",
+      "regulatory_filing",
+      "league_or_federation",
+      "court_or_tribunal"
+    ],
+    "2": [
+      "national_media_major",
+      "local_club_media",
+      "sports_business_media",
+      "transfer_specialist",
+      "structured_data_provider",
+      "archived_retrospective",
+      "unknown"
+    ],
+    "3": [
+      "aggregator_low_quality",
+      "transfermarkt_backbone",
+      "social_media",
+      "user_generated"
+    ]
+  },
+  "tier_of_class": {
+    "official_club_buying": 1,
+    "official_club_selling": 1,
+    "official_club_other": 1,
+    "financial_disclosure": 1,
+    "regulatory_filing": 1,
+    "league_or_federation": 1,
+    "court_or_tribunal": 1,
+    "national_media_major": 2,
+    "local_club_media": 2,
+    "sports_business_media": 2,
+    "transfer_specialist": 2,
+    "structured_data_provider": 2,
+    "archived_retrospective": 2,
+    "unknown": 2,
+    "aggregator_low_quality": 3,
+    "transfermarkt_backbone": 3,
+    "social_media": 3,
+    "user_generated": 3
+  },
+  "domain_class": {
+    "2playbook.com": "sports_business_media",
+    "90min.com": "aggregator_low_quality",
+    "abola.pt": "national_media_major",
+    "ad.nl": "national_media_major",
+    "api-football.com": "structured_data_provider",
+    "as.com": "national_media_major",
+    "bbc.co.uk": "national_media_major",
+    "bild.de": "national_media_major",
+    "bundesliga.com": "league_or_federation",
+    "bvb.de": "financial_disclosure",
+    "calcioefinanza.it": "sports_business_media",
+    "cas.tas.org": "court_or_tribunal",
+    "clarin.com": "national_media_major",
+    "corrieredellosport.it": "national_media_major",
+    "di-marzio.com": "transfer_specialist",
+    "fabrizioromano.com": "transfer_specialist",
+    "facebook.com": "social_media",
+    "fifa.com": "league_or_federation",
+    "footballbenchmark.com": "sports_business_media",
+    "gazzetta.it": "national_media_major",
+    "ge.globo.com": "national_media_major",
+    "gianlucadimarzio.com": "transfer_specialist",
+    "globo.com": "national_media_major",
+    "hurriyet.com.tr": "national_media_major",
+    "instagram.com": "social_media",
+    "kap.org.tr": "regulatory_filing",
+    "kicker.de": "national_media_major",
+    "laliga.com": "league_or_federation",
+    "lanacion.com.ar": "national_media_major",
+    "legaseriea.it": "league_or_federation",
+    "lequipe.fr": "national_media_major",
+    "ligue1.com": "league_or_federation",
+    "marca.com": "national_media_major",
+    "milliyet.com.tr": "national_media_major",
+    "msn.com": "aggregator_low_quality",
+    "mundodeportivo.com": "national_media_major",
+    "ole.com.ar": "national_media_major",
+    "opta.com": "structured_data_provider",
+    "premierleague.com": "league_or_federation",
+    "record.pt": "national_media_major",
+    "reddit.com": "social_media",
+    "sabah.com.tr": "national_media_major",
+    "skysports.com": "transfer_specialist",
+    "soccerment.com": "structured_data_provider",
+    "sozcu.com.tr": "national_media_major",
+    "sport.es": "national_media_major",
+    "sport24.gr": "national_media_major",
+    "sportbusiness.com": "sports_business_media",
+    "sportico.com": "sports_business_media",
+    "sportmonks.com": "structured_data_provider",
+    "statsbomb.com": "structured_data_provider",
+    "swissramble.substack.com": "sports_business_media",
+    "tas-cas.org": "court_or_tribunal",
+    "telegraaf.nl": "national_media_major",
+    "telegraph.co.uk": "national_media_major",
+    "tff.org": "league_or_federation",
+    "theathletic.com": "transfer_specialist",
+    "theguardian.com": "national_media_major",
+    "thetimes.co.uk": "national_media_major",
+    "transfermarkt.co.uk": "transfermarkt_backbone",
+    "transfermarkt.com": "transfermarkt_backbone",
+    "transfermarkt.de": "transfermarkt_backbone",
+    "tuttosport.com": "national_media_major",
+    "twitter.com": "social_media",
+    "uefa.com": "league_or_federation",
+    "web.archive.org": "archived_retrospective",
+    "wikipedia.org": "aggregator_low_quality",
+    "x.com": "social_media",
+    "yahoo.com": "aggregator_low_quality",
+    "youtube.com": "social_media"
+  },
+  "low_quality_markers": [
+    "sportskeeda",
+    "givemesport",
+    "footballtransfers",
+    "caughtoffside",
+    "90min.com",
+    "tribalfootball",
+    "football-italia",
+    "onefootball",
+    "msn.com",
+    "yahoo.com",
+    "pinterest",
+    "reddit.com",
+    "wikipedia.org"
+  ],
+  "unknown_domain_policy": {
+    "tier": 2,
+    "action": "retrieve_read_classify",
+    "rationale": "The 8-event smoke test found an unclassified domain on every event. Treating unknown as tier 3 meant they were never retrieved, so any uncatalogued outlet carrying contract detail was invisible."
+  },
+  "observed_domains_in_cache": 645,
+  "top_observed_unclassified": [
+    {
+      "domain": "transfermarkt.us",
+      "documents": 69
+    },
+    {
+      "domain": "transferfeed.com",
+      "documents": 46
+    },
+    {
+      "domain": "goal.com",
+      "documents": 45
+    },
+    {
+      "domain": "espn.com",
+      "documents": 41
+    },
+    {
+      "domain": "nytimes.com",
+      "documents": 38
+    },
+    {
+      "domain": "juventus.com",
+      "documents": 36
+    },
+    {
+      "domain": "sempremilan.com",
+      "documents": 30
+    },
+    {
+      "domain": "capology.com",
+      "documents": 27
+    },
+    {
+      "domain": "fotmob.com",
+      "documents": 25
+    },
+    {
+      "domain": "flashscore.com",
+      "documents": 21
+    },
+    {
+      "domain": "m.aiscore.com",
+      "documents": 17
+    },
+    {
+      "domain": "bbc.com",
+      "documents": 16
+    },
+    {
+      "domain": "sport.sky.it",
+      "documents": 14
+    },
+    {
+      "domain": "acmilan.com",
+      "documents": 14
+    },
+    {
+      "domain": "acffiorentina.com",
+      "documents": 13
+    },
+    {
+      "domain": "sempreinter.com",
+      "documents": 12
+    },
+    {
+      "domain": "threads.com",
+      "documents": 12
+    },
+    {
+      "domain": "inter.it",
+      "documents": 11
+    },
+    {
+      "domain": "en.atalanta.it",
+      "documents": 11
+    },
+    {
+      "domain": "sportmediaset.mediaset.it",
+      "documents": 11
+    },
+    {
+      "domain": "blackwhitereadallover.com",
+      "documents": 10
+    },
+    {
+      "domain": "violanation.com",
+      "documents": 10
+    },
+    {
+      "domain": "malagacf.com",
+      "documents": 10
+    },
+    {
+      "domain": "baike.baidu.com",
+      "documents": 9
+    },
+    {
+      "domain": "torinofc.it",
+      "documents": 9
+    },
+    {
+      "domain": "sortitoutsi.net",
+      "documents": 9
+    },
+    {
+      "domain": "linkedin.com",
+      "documents": 9
+    },
+    {
+      "domain": "chelseafc.com",
+      "documents": 8
+    },
+    {
+      "domain": "bleacherreport.com",
+      "documents": 8
+    },
+    {
+      "domain": "juvefc.com",
+      "documents": 8
+    },
+    {
+      "domain": "atalanta.it",
+      "documents": 8
+    },
+    {
+      "domain": "todocoleccion.net",
+      "documents": 8
+    },
+    {
+      "domain": "getfootballnewsfrance.com",
+      "documents": 8
+    },
+    {
+      "domain": "werder.de",
+      "documents": 7
+    },
+    {
+      "domain": "si.com",
+      "documents": 7
+    },
+    {
+      "domain": "acmilan.theoffside.com",
+      "documents": 7
+    },
+    {
+      "domain": "aiscore.com",
+      "documents": 7
+    },
+    {
+      "domain": "stade-rennais-online.com",
+      "documents": 7
+    },
+    {
+      "domain": "sscnapoli.it",
+      "documents": 7
+    },
+    {
+      "domain": "foxsports.com",
+      "documents": 7
+    },
+    {
+      "domain": "fbref.com",
+      "documents": 7
+    },
+    {
+      "domain": "tiktok.com",
+      "documents": 7
+    },
+    {
+      "domain": "eurosport.it",
+      "documents": 7
+    },
+    {
+      "domain": "tribuna.com",
+      "documents": 7
+    },
+    {
+      "domain": "speziacalcio.com",
+      "documents": 7
+    },
+    {
+      "domain": "slbenfica.pt",
+      "documents": 6
+    },
+    {
+      "domain": "football-inflate.top",
+      "documents": 6
+    },
+    {
+      "domain": "allfootballapp.com",
+      "documents": 6
+    },
+    {
+      "domain": "staderennais.com",
+      "documents": 6
+    },
+    {
+      "domain": "cultofcalcio.com",
+      "documents": 6
+    },
+    {
+      "domain": "en.namu.wiki",
+      "documents": 6
+    },
+    {
+      "domain": "olympiacos.org",
+      "documents": 6
+    },
+    {
+      "domain": "bjk.com.tr",
+      "documents": 6
+    },
+    {
+      "domain": "lancs.live",
+      "documents": 6
+    },
+    {
+      "domain": "calciomercato.com",
+      "documents": 6
+    },
+    {
+      "domain": "theplayerstribune.com",
+      "documents": 6
+    },
+    {
+      "domain": "thescore.com",
+      "documents": 5
+    },
+    {
+      "domain": "chiesaditotti.com",
+      "documents": 5
+    },
+    {
+      "domain": "sevillafc.es",
+      "documents": 5
+    },
+    {
+      "domain": "reuters.com",
+      "documents": 5
+    }
+  ]
+}
