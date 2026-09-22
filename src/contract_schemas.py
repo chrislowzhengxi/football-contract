@@ -27,6 +27,33 @@ class Evidence:
     retrieval_date: str
     evidence_text: str
     language: str
+    source_tier: int | None = None
+    retrieved_text: str | None = None
+    retrieval_status: str | None = None
+    retrieval_http_status: int | None = None
+    retrieval_final_url: str | None = None
+    retrieval_timestamp: str | None = None
+    retrieval_method: str | None = None
+    retrieval_error: str | None = None
+    content_length: int | None = None
+    event_match_status: str | None = None
+    event_match_score: float | None = None
+    event_match_reasons: list[str] | None = None
+    query_family: str | None = None
+    query_language: str | None = None
+    target_domain: str | None = None
+    query_reason: str | None = None
+
+
+@dataclass
+class ProviderMetadata:
+    provider: str | None = None
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    parley_cost_header: str | None = None
+    total_request_cost: float | None = None
 
 
 @dataclass
@@ -45,8 +72,11 @@ class ContractField:
     unit: str | None = None
     additional_condition: str | None = None
     date: str | None = None
+    year: int | None = None
+    precision: str | None = None
     exercised: bool | None = None
     evidence_ids: list[str] = field(default_factory=list)
+    reported_values: list[dict[str, Any]] = field(default_factory=list)
 
 
 FIELD_NAMES = (
@@ -62,6 +92,42 @@ FIELD_NAMES = (
     "parent_contract_expiry",
     "release_or_purchase_clause",
 )
+
+
+def render_model_schema_instructions() -> str:
+    allowed = ", ".join(sorted(STATUS_VALUES))
+    field_lines = []
+    for name in FIELD_NAMES:
+        field_lines.append(
+            f'  "{name}": {{"value": nullable, "status": one of [{allowed}], '
+            '"confidence": number from 0 to 1, "evidence_ids": array of source evidence_id strings, '
+            'plus only relevant nullable fields such as amount, currency, price, percentage, '
+            'description, metric, threshold, unit, additional_condition, date, exercised, '
+            'or reported_values: array of original per-source amount/currency objects}}'
+        )
+    return "\n".join([
+        "The response schema is authoritative and every contract field is required:",
+        '{',
+        '  "research_timestamp": ISO-8601 string,',
+        '  "sources": array of evidence objects,',
+        '  "deal_summary": string,',
+        '  "review_required": boolean,',
+        '  "review_reasons": array of strings,',
+        *field_lines,
+        '}',
+        f"Every status MUST be exactly one of: [{allowed}].",
+        "Never invent status values such as confirmed, yes, no, known, or unknown.",
+        "disclosed_yes means the supplied evidence explicitly establishes the feature exists or is true.",
+        "disclosed_no means the supplied evidence explicitly states the feature does not exist or is false.",
+        "not_found means the supplied evidence does not establish the term; absence of discussion is not disclosed_no.",
+        "partially_disclosed means only part of a contractual term is known.",
+        "Use not_applicable only when the field genuinely does not apply to this transaction.",
+        "Use null for unknown values, and link every non-not_found contractual claim through evidence_ids.",
+        "When sources report amounts, preserve each source's original amount and currency in reported_values; do not convert currencies or invent a consensus number.",
+        "Only Tier 1 or Tier 2 sources are admissible contractual evidence; Tier 3 sources are context only and must not independently establish exact contractual fields.",
+        "Deterministic Transfermarkt fee and market-value fields in the event are background metadata only; never copy them into researched contract fields without admissible source evidence.",
+        "Return exactly one JSON object with no prose and no markdown fences.",
+    ])
 
 
 @dataclass
@@ -83,6 +149,7 @@ class ContractResearchResult:
     buy_back: ContractField
     parent_contract_expiry: ContractField
     release_or_purchase_clause: ContractField
+    provider_metadata: ProviderMetadata = field(default_factory=ProviderMetadata)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,6 +168,7 @@ class ContractResearchResult:
             deal_summary=str(payload["deal_summary"]),
             review_required=bool(payload.get("review_required", False)),
             review_reasons=[str(reason) for reason in payload.get("review_reasons", [])],
+            provider_metadata=ProviderMetadata(**payload.get("provider_metadata", {})),
             **fields,
         )
         validate_research_result(result)
@@ -125,6 +193,7 @@ def _evidence_from_dict(value: Any) -> Evidence:
     missing = required - value.keys()
     if missing:
         raise ValueError(f"source missing fields: {sorted(missing)}")
+    allowed = set(Evidence.__dataclass_fields__)
     return Evidence(
         evidence_id=str(value["evidence_id"]),
         source_url=str(value["source_url"]),
@@ -135,12 +204,17 @@ def _evidence_from_dict(value: Any) -> Evidence:
         retrieval_date=str(value["retrieval_date"]),
         evidence_text=str(value["evidence_text"]),
         language=str(value["language"]),
+        **{key: item for key, item in value.items() if key in allowed - {
+            "evidence_id", "source_url", "source_title", "publisher", "source_type",
+            "publication_date", "retrieval_date", "evidence_text", "language",
+        }},
     )
 
 
 def validate_research_result(result: ContractResearchResult) -> None:
     source_ids = {source.evidence_id for source in result.sources}
     reasons = set(result.review_reasons)
+    _add_specific_review_reasons(result, reasons)
     for name in FIELD_NAMES:
         finding = getattr(result, name)
         if finding.status not in STATUS_VALUES:
@@ -161,6 +235,19 @@ def validate_research_result(result: ContractResearchResult) -> None:
             reasons.add("obligation trigger requires human review")
         if finding.confidence < 0.5 and finding.status not in {"not_found", "not_applicable"}:
             reasons.add(f"low-confidence extraction for {name}")
+        if name == "parent_contract_expiry" and (
+            finding.date is not None or (finding.value is not None and finding.precision not in {"year", "year_or_season"})
+        ):
+            linked_text = " ".join(
+                source.evidence_text.lower()
+                for source in result.sources
+                if source.evidence_id in finding.evidence_ids
+            )
+            explicit_date_terms = ("contract expires", "contract expiry", "contract until", "contract through", "contract valid until", "years remaining", "year contract", "contract duration")
+            date_is_explicit = any(term in linked_text for term in explicit_date_terms)
+            if not date_is_explicit:
+                reasons.discard("parent contract expiry is not explicitly sourced")
+                reasons.add("unsupported_contract_expiry")
         if finding.evidence_ids and any(source.source_type == "aggregator" for source in result.sources if source.evidence_id in finding.evidence_ids):
             if any(value is not None for value in (finding.amount, finding.price, finding.percentage, finding.threshold)):
                 reasons.add(f"exact figure for {name} relies on an aggregator")
@@ -169,3 +256,36 @@ def validate_research_result(result: ContractResearchResult) -> None:
     if result.review_required and not reasons:
         raise ValueError("review_required requires at least one review reason")
     result.review_reasons[:] = sorted(reasons)
+
+
+def _add_specific_review_reasons(result: ContractResearchResult, reasons: set[str]) -> None:
+    all_text = " ".join(source.evidence_text.lower() for source in result.sources)
+    fee_text = " ".join(
+        source.evidence_text.lower()
+        for source in result.sources
+        if source.evidence_id in set(result.transfer_fee.evidence_ids + result.add_ons.evidence_ids)
+    )
+    currencies = set()
+    for marker, currency in (("€", "EUR"), ("£", "GBP"), ("$", "USD"), ("eur", "EUR"), ("gbp", "GBP"), ("usd", "USD")):
+        if marker in fee_text:
+            currencies.add(currency)
+    if len(currencies) > 1:
+        reasons.add("currency_reporting_difference")
+    package_terms = ("add-on", "add on", "bonus", "could increase", "up to", "total package", "total fee")
+    if any(term in fee_text for term in package_terms) and (
+        result.transfer_fee.status in {"partially_disclosed", "conflicting_sources"}
+        or result.add_ons.status in {"partially_disclosed", "conflicting_sources"}
+    ):
+        reasons.add("base_fee_vs_total_package_ambiguity")
+    if result.transfer_fee.status == "conflicting_sources":
+        reasons.add("conflicting_base_fee_reports")
+    if result.transfer_fee.amount is not None and result.transfer_fee.amount > 0 and len(result.transfer_fee.evidence_ids) == 1:
+        linked_sources = [source for source in result.sources if source.evidence_id in result.transfer_fee.evidence_ids]
+        if linked_sources and linked_sources[0].source_type not in {"official", "regulatory", "governing_body"}:
+            reasons.add("weak_source_for_exact_financial_term")
+    option = result.purchase_option
+    if option.status in {"disclosed_yes", "partially_disclosed"} and option.price is None and option.amount is None:
+        reasons.add("option_terms_incomplete")
+    later_transfer_language = all_text + " " + " ".join(reasons).lower()
+    if any(term in later_transfer_language for term in ("later permanent", "permanent transfer", "subsequently signed", "joined permanently", "transitions from loan")) and "loan" in later_transfer_language:
+        reasons.add("later_transfer_used_to_interpret_original_deal")

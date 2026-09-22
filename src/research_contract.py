@@ -11,7 +11,19 @@ from urllib.request import Request, urlopen
 import pandas as pd
 
 from .config import DEFAULT_OUTPUT_DIR
-from .contract_schemas import ContractResearchResult, utc_now
+from .contract_schemas import (
+    ContractResearchResult,
+    ProviderMetadata,
+    render_model_schema_instructions,
+    utc_now,
+)
+from .source_discovery import SourceCandidate
+
+
+class ProviderFailure(RuntimeError):
+    def __init__(self, message: str, diagnostics: dict[str, Any]):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 class ResearchProvider(Protocol):
@@ -143,6 +155,34 @@ class FixtureResearchProvider:
         payload = json.loads(self.path.read_text())
         payload["event_id"] = event["event_id"]
         return ContractResearchResult.from_dict(payload)
+
+
+def _completion_json(payload: dict[str, Any]) -> dict[str, Any]:
+    choices = payload.get("choices", [])
+    if not choices:
+        raise ValueError("Parley response did not contain choices")
+    content = choices[0].get("message", {}).get("content")
+    if not isinstance(content, str):
+        raise ValueError("Parley response did not contain text JSON content")
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        start, end = content.find("{"), content.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("Parley response did not contain a JSON object") from None
+        try:
+            return json.loads(content[start:end + 1])
+        except json.JSONDecodeError:
+            raise ValueError("Parley response contained malformed JSON") from None
+
+
+def _parse_cost(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value.removeprefix("$"))
+    except ValueError:
+        return None
 
 
 def _response_json(payload: dict[str, Any]) -> dict[str, Any]:

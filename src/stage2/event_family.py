@@ -1,0 +1,255 @@
+"""Stage 2 event-family layer.
+
+A Transfermarkt row is a *registration movement*, not necessarily a negotiated
+transaction. The Stage 2 diagnostic (2026-09-21) showed that most fee-bearing
+loan-return rows are the administrative unwinding of an agreement struck on a
+different leg, or with a third club. Researching such a row on its own asks a
+question the row cannot answer.
+
+This module groups related rows into an `event_family` so terms can be attached
+to the leg that actually carries them. It is deterministic and offline: it reads
+Stage 1C, applies sequence logic, and writes a separate layer. Stage 1C rows are
+never modified.
+
+Grouping establishes only that rows are RELATED. It never asserts an economic
+mechanism - that requires evidence, and lives in `mechanisms.py`.
+"""
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+
+import pandas as pd
+
+# A loan and its return leg. Deliberately generous: Pio Esposito's Inter->Spezia
+# loan ran 680 days, and multi-season loans are common.
+MAX_LOAN_DAYS = 950
+
+# Two follow-on windows. Inside IMMEDIATE the link is strong enough to treat the
+# rows as one economic episode; between IMMEDIATE and WINDOW the rows are
+# probably related but the family is flagged for review.
+FOLLOW_ON_IMMEDIATE_DAYS = 21
+FOLLOW_ON_WINDOW_DAYS = 60
+
+# Distance from 30 June within which a return looks like ordinary season-end
+# expiry rather than an early exit.
+SEASON_END_TOLERANCE_DAYS = 10
+
+LOAN_TYPES = {"loan"}
+RETURN_TYPES = {"loan_return"}
+PERMANENT_TYPES = {"permanent_transfer", "free_transfer", "undisclosed_transfer", "no_fee_shown"}
+
+EVENT_ROLES = (
+    "original_loan", "loan_return", "early_termination", "permanent_transfer",
+    "third_party_sale", "administrative_return", "internal_registration", "unknown",
+)
+
+FAMILY_CLASSES = (
+    "likely_negotiated_return", "early_termination", "immediate_follow_on_transfer",
+    "third_party_sale_related", "administrative_return", "unresolved_family_semantics",
+)
+
+
+def _family_id(player_id, seed_event_id: str) -> str:
+    h = hashlib.sha256(f"{player_id}|{seed_event_id}".encode()).hexdigest()[:20]
+    return f"fam_{h}"
+
+
+def _days_from_season_end(ts: pd.Timestamp) -> int:
+    """Absolute days to the nearest 30 June."""
+    best = None
+    for year in (ts.year - 1, ts.year, ts.year + 1):
+        d = abs((ts - pd.Timestamp(year=year, month=6, day=30)).days)
+        best = d if best is None else min(best, d)
+    return best
+
+
+@dataclass
+class Family:
+    family_id: str
+    player_id: object
+    events: list = field(default_factory=list)      # ordered event_ids
+    roles: dict = field(default_factory=dict)       # event_id -> role
+    start_date: object = None
+    end_date: object = None
+    classification: str = "unresolved_family_semantics"
+    review_required: bool = False
+    review_reasons: list = field(default_factory=list)
+    notes: str = ""
+
+
+def build_families(canonical: pd.DataFrame, target_event_ids: list[str]) -> dict[str, Family]:
+    """One family per target loan-return event.
+
+    Anchored on return legs because that is the population Stage 2 selected. The
+    family is: the originating loan, the return, and follow-on movements close
+    enough in time to belong to the same episode.
+    """
+    df = canonical.copy()
+    df["_date"] = pd.to_datetime(df["transfer_date"], errors="coerce")
+    by_player = {pid: g.sort_values(["_date", "event_id"]) for pid, g in df.groupby("player_id")}
+    families: dict[str, Family] = {}
+
+    for eid in target_event_ids:
+        row = df[df.event_id == eid]
+        if row.empty:
+            continue
+        ret = row.iloc[0]
+        chain = by_player[ret.player_id]
+        rdate = ret._date
+
+        # --- originating loan: latest prior loan with reversed clubs ---
+        prior = chain[(chain._date <= rdate) & (chain.event_id != eid)
+                      & (chain.transfer_type_normalized.isin(LOAN_TYPES))
+                      & (chain.to_club_id == ret.from_club_id)
+                      & (chain.from_club_id == ret.to_club_id)]
+        prior = prior[(rdate - prior._date).dt.days <= MAX_LOAN_DAYS]
+        loan = prior.iloc[-1] if len(prior) else None
+
+        fam = Family(_family_id(ret.player_id, eid), ret.player_id)
+        ordered = []
+        if loan is not None:
+            ordered.append((loan._date, loan.event_id, "original_loan"))
+        ordered.append((rdate, eid, "loan_return"))
+
+        # --- follow-on movements after the return ---
+        after = chain[(chain._date > rdate)
+                      & ((chain._date - rdate).dt.days <= FOLLOW_ON_WINDOW_DAYS)]
+        follow = []
+        for _, f in after.iterrows():
+            gap = (f._date - rdate).days
+            if f.transfer_type_normalized == "youth_or_internal" or f.get("is_internal_move"):
+                role = "internal_registration"
+            elif f.transfer_type_normalized in PERMANENT_TYPES:
+                # A sale back to the loan club is the option/counter-option story;
+                # a sale to anyone else makes the return a conduit.
+                role = ("permanent_transfer" if f.to_club_id == ret.from_club_id
+                        else "third_party_sale")
+            elif f.transfer_type_normalized in LOAN_TYPES:
+                role = "original_loan"          # seeds the next family
+            else:
+                role = "unknown"
+            follow.append({"event_id": f.event_id, "gap": gap, "role": role,
+                           "type": f.transfer_type_normalized,
+                           "to_club_id": f.to_club_id, "to_club": f.to_club_name,
+                           "date": f._date})
+            ordered.append((f._date, f.event_id, role))
+
+        ordered.sort(key=lambda t: (t[0], t[1]))
+        fam.events = [e for _, e, _ in ordered]
+        fam.roles = {e: r for _, e, r in ordered}
+        fam.start_date = min(d for d, _, _ in ordered)
+        fam.end_date = max(d for d, _, _ in ordered)
+
+        _classify(fam, ret, loan, follow, rdate)
+        families[eid] = fam
+    return families
+
+
+def _classify(fam: Family, ret, loan, follow: list, rdate) -> None:
+    """Assign the family classification and refine the return leg's role.
+
+    Priority order matters: a third-party sale explains the return more
+    specifically than 'there was a follow-on', so it is tested first.
+    """
+    season_end = _days_from_season_end(rdate) <= SEASON_END_TOLERANCE_DAYS
+    immediate = [f for f in follow if f["gap"] <= FOLLOW_ON_IMMEDIATE_DAYS]
+    windowed = [f for f in follow if f["gap"] <= FOLLOW_ON_WINDOW_DAYS]
+    third_party = [f for f in windowed if f["role"] == "third_party_sale"]
+    back_to_loan_club = [f for f in windowed if f["role"] == "permanent_transfer"]
+
+    if loan is None:
+        fam.review_required = True
+        fam.review_reasons.append("no originating loan found within %d days" % MAX_LOAN_DAYS)
+
+    if third_party:
+        f = third_party[0]
+        fam.classification = "third_party_sale_related"
+        fam.roles[ret.event_id] = "administrative_return"
+        fam.notes = (f"Parent sold the player to a third club ({f['to_club']}) "
+                     f"{f['gap']}d after the return; the return leg is the conduit.")
+        if f["gap"] > FOLLOW_ON_IMMEDIATE_DAYS:
+            fam.review_required = True
+            fam.review_reasons.append(
+                f"third-party sale is {f['gap']}d after the return, beyond the "
+                f"{FOLLOW_ON_IMMEDIATE_DAYS}d immediate window; link is weaker")
+    elif back_to_loan_club:
+        f = back_to_loan_club[0]
+        fam.classification = "likely_negotiated_return"
+        fam.roles[ret.event_id] = "loan_return"
+        fam.notes = (f"Player returned and was then transferred back to the loan club "
+                     f"({f['to_club']}) {f['gap']}d later - consistent with an option "
+                     f"or counter-option being settled. Mechanism NOT asserted.")
+    elif immediate and not season_end:
+        fam.classification = "early_termination"
+        fam.roles[ret.event_id] = "early_termination"
+        fam.notes = (f"Return is {_days_from_season_end(rdate)}d from any season end and is "
+                     f"followed within {immediate[0]['gap']}d by another movement.")
+    elif immediate:
+        fam.classification = "immediate_follow_on_transfer"
+        fam.roles[ret.event_id] = "administrative_return"
+        fam.notes = (f"Season-end return immediately followed by a further move "
+                     f"({immediate[0]['type']} to {immediate[0]['to_club']}, "
+                     f"{immediate[0]['gap']}d).")
+    elif not follow:
+        fam.classification = "likely_negotiated_return"
+        fam.roles[ret.event_id] = "loan_return"
+        fam.notes = ("Standalone fee-bearing return with no follow-on movement; the "
+                     "fee most plausibly settles something agreed on this leg.")
+    elif any(f["role"] == "original_loan" for f in windowed):
+        # Serial loan cycling: the parent takes the player back at season end and
+        # re-loans him inside the same window. The return is a staging step, and
+        # the money on it settles the loan that just ended rather than a new deal.
+        f = next(f for f in windowed if f["role"] == "original_loan")
+        fam.classification = "immediate_follow_on_transfer"
+        fam.roles[ret.event_id] = "administrative_return"
+        fam.notes = (f"Serial loan cycling: re-loaned to {f['to_club']} {f['gap']}d after "
+                     f"the return, within the same transfer window.")
+        fam.review_required = True
+        fam.review_reasons.append(
+            f"follow-on loan is {f['gap']}d after the return, beyond the "
+            f"{FOLLOW_ON_IMMEDIATE_DAYS}d immediate window")
+    else:
+        fam.classification = "unresolved_family_semantics"
+        fam.review_required = True
+        fam.review_reasons.append("follow-on exists but does not match a known pattern")
+
+    if fam.classification in ("third_party_sale_related", "early_termination",
+                              "immediate_follow_on_transfer"):
+        fam.review_required = True
+        fam.review_reasons.append(
+            "fee_on_return_eur should not be read as a bilateral transfer price here")
+
+
+def families_to_rows(families: dict[str, Family], canonical: pd.DataFrame) -> pd.DataFrame:
+    """Flatten to one row per (family, member event) for the Stage 2 layer."""
+    meta = canonical.set_index("event_id")
+    out = []
+    for target_eid, fam in families.items():
+        for eid in fam.events:
+            if eid not in meta.index:
+                continue
+            m = meta.loc[eid]
+            out.append({
+                "event_family_id": fam.family_id,
+                "event_id": eid,
+                "is_family_anchor": eid == target_eid,
+                "event_role": fam.roles.get(eid, "unknown"),
+                "family_player_id": fam.player_id,
+                "player_name": m.player_name,
+                "transfer_date": m.transfer_date,
+                "from_club_name": m.from_club_name,
+                "to_club_name": m.to_club_name,
+                "transfer_type_normalized": m.transfer_type_normalized,
+                "permanent_transfer_fee_eur": m.permanent_transfer_fee_eur,
+                "loan_fee_eur": m.loan_fee_eur,
+                "fee_on_return_eur": m.fee_on_return_eur,
+                "family_start_date": fam.start_date.date().isoformat(),
+                "family_end_date": fam.end_date.date().isoformat(),
+                "family_events": ";".join(fam.events),
+                "family_interpretation_status": fam.classification,
+                "family_review_required": fam.review_required,
+                "family_review_reasons": " | ".join(fam.review_reasons),
+                "family_notes": fam.notes,
+            })
+    return pd.DataFrame(out)

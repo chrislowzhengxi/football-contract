@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -24,6 +25,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..stage1.backbone import REBUILD_DIR
+from .pdf_text import fetch_text as pdf_fetch_text
 from .queries import build_queries
 from .sources import can_establish_alone, classify, domain_of, tier_of
 
@@ -31,6 +33,7 @@ PILOT_CSV = REBUILD_DIR / "stage2_pilot_selection.csv"
 OUT_DIR = REBUILD_DIR / "stage2"
 CACHE_DIR = Path("data/outputs/contract_research/stage2_cache")
 ENV_FILE = Path(".pytest_cache/.env")
+PDF_URL_HINT = re.compile(r"\.pdf($|\?)|/api/file/download/|/download/|filings?/", re.I)
 ALLOWED_ENV_KEYS = {"TAVILY_API_KEY", "PARLEY_API_KEY", "PARLEY_MODEL"}
 
 # The 11 Stage 2 target fields. Stage 1C settles everything else.
@@ -43,16 +46,36 @@ TARGET_FIELDS = [
 
 # A page only reaches the LLM if it contains contract language. This is the
 # main cost control: events whose evidence says nothing cost zero extraction.
-GATE_TERMS = [
-    "option to buy", "purchase option", "obligation to buy", "obligation",
-    "add-on", "add on", "bonus", "sell-on", "sell on", "buy-back", "buy back",
-    "release clause", "clause", "per cent", "percent", "%", "contract until",
+# A page reaches the LLM only if it carries contract language. Splitting the
+# vocabulary by strength matters: a flat count both admitted match reports
+# (which say "appearances" and "%") and rejected genuine announcements whose
+# only signal was a single explicit term like "obligation to buy".
+STRONG_GATE_TERMS = [
+    "option to buy", "purchase option", "obligation to buy", "obligation to purchase",
+    "mandatory purchase", "sell-on", "sell on clause", "buy-back", "buy back clause",
+    "release clause", "exercised the option", "triggered the obligation",
+    "permanent deal", "permanent transfer for", "made permanent",
+    "diritto di riscatto", "obbligo di riscatto", "controriscatto",
+    "clausola rescissoria", "percentuale sulla futura rivendita",
+    "opción de compra", "obligación de compra", "opción de recompra",
+    "cláusula de rescisión", "porcentaje de una futura venta",
+    "opção de compra", "opção de recompra", "percentagem de mais-valia",
+    "option d'achat", "obligation d'achat", "clause de rachat",
+    "pourcentage à la revente", "kaufoption", "kaufpflicht",
+    "weiterverkaufsbeteiligung", "rückkaufoption",
+    "satın alma opsiyonu", "zorunlu satın alma", "geri alma opsiyonu",
+    "bonservis bedeli", "opsiyon hakkı",
+    # Vocabulary observed in KAP (Borsa Istanbul) filings, which itemise every
+    # transfer of a season: these are the phrases the disclosures actually use.
+    "sonraki satıştan pay", "sonraki satış payı", "geçici transfer bedeli",
+    "kesin transferini gerçekleştirme opsiyonu", "şarta bağlı zorunlu",
+    "satın alma önceliği", "transfer bedeli ödenecektir",
+]
+WEAK_GATE_TERMS = [
+    "add-on", "add on", "bonus", "bonuses", "clause", "contract until",
     "signed until", "loan fee", "exercised", "triggered", "appearances",
-    "riscatto", "obbligo", "diritto", "bonus", "clausola", "percentuale",
-    "opción de compra", "obligación", "cláusula", "opção de compra",
-    "option d'achat", "obligation d'achat", "clause", "Kaufoption",
-    "Kaufpflicht", "Ausstiegsklausel", "satın alma opsiyonu",
-    "zorunlu satın alma", "bonservis", "opsiyon",
+    "per cent", "percent", "undisclosed fee", "transfer fee", "riscatto",
+    "obbligo", "clausola", "bónus", "variables", "boni",
 ]
 
 
@@ -84,10 +107,13 @@ class Metrics:
     search_cache_hits: int = 0
     search_results_returned: int = 0
     pages_retrieved: int = 0
+    pdf_pages_extracted: int = 0
+    pages_failed_retrieval: int = 0
     page_cache_hits: int = 0
     pages_relevant: int = 0
     pages_passing_gate: int = 0
     llm_extraction_calls: int = 0
+    extraction_cache_hits: int = 0
     llm_skipped_insufficient_evidence: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -119,23 +145,81 @@ def cached_search(query: str, provider, metrics: Metrics, dry_run: bool) -> list
     return results
 
 
-def cached_page(url: str, fetcher, metrics: Metrics, dry_run: bool) -> str | None:
+def cached_page(url: str, fetcher, metrics: Metrics, dry_run: bool) -> tuple[str | None, str]:
+    """Return (text, retrieval_status).
+
+    The status is kept so a retrieval failure is never confused with a page
+    that was fetched fine but simply says nothing about the contract.
+    """
     path = _cache_path("page", url)
     if path.exists():
-        metrics.page_cache_hits += 1
-        return json.loads(path.read_text()).get("text")
+        payload = json.loads(path.read_text())
+        text = payload.get("text")
+        if text:
+            metrics.page_cache_hits += 1
+            return text, payload.get("status", "ok")
+        # a cached empty body is a cached failure, not a cache miss
+        metrics.pages_failed_retrieval += 1
+        return None, payload.get("status", "empty")
     if dry_run:
-        return None
+        return None, "dry_run"
+    # Regulated filings are usually PDFs. The HTML fetcher returns parsed
+    # binary for those, which is why the pilot could not read any KAP
+    # disclosure. Try the PDF path first for anything that looks like a file.
+    if PDF_URL_HINT.search(url):
+        text, status = pdf_fetch_text(url, CACHE_DIR / "pdf_bin")
+        if text:
+            metrics.pages_retrieved += 1
+            metrics.pdf_pages_extracted += 1
+            path.write_text(json.dumps({"url": url, "text": text, "status": status},
+                                       ensure_ascii=False))
+            return text, status
     try:
         result = fetcher.fetch(url)
-        text = getattr(result, "text", None) or getattr(result, "visible_text", None)
+        text = getattr(result, "extracted_text", "") or ""
+        status = getattr(result, "retrieval_status", "unknown")
+        http = getattr(result, "http_status", None)
     except Exception as exc:                       # noqa: BLE001
-        metrics.errors.append(f"retrieval failed {domain_of(url)}: {type(exc).__name__}")
-        return None
-    metrics.pages_retrieved += 1
-    path.write_text(json.dumps({"url": url, "text": text}, ensure_ascii=False))
+        metrics.pages_failed_retrieval += 1
+        metrics.errors.append(f"retrieval raised {domain_of(url)}: {type(exc).__name__}")
+        return None, "exception"
+    if text:
+        metrics.pages_retrieved += 1
+    else:
+        metrics.pages_failed_retrieval += 1
+        status = f"{status}:{http}" if http else status
+    path.write_text(json.dumps({"url": url, "text": text, "status": status},
+                               ensure_ascii=False))
     time.sleep(0.4)
-    return text
+    return (text or None), status
+
+
+def excerpt_around_player(text: str, event: dict, window: int = 3500) -> str:
+    """For a long filing, keep only the passages that name the player.
+
+    A club's annual report itemises every transfer of the season; sending all
+    132,000 characters would be wasteful and would bury the relevant clause.
+    """
+    if len(text) <= window * 2:
+        return text
+    surname = str(event.get("player_name", "")).split()[-1].lower()
+    low, spans = text.lower(), []
+    start = 0
+    while len(spans) < 4:
+        i = low.find(surname, start)
+        if i < 0:
+            break
+        spans.append((max(0, i - window // 2), min(len(text), i + window)))
+        start = i + len(surname)
+    if not spans:
+        return text[:window * 2]
+    merged = [spans[0]]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], b)
+        else:
+            merged.append((a, b))
+    return "\n...\n".join(text[a:b] for a, b in merged)
 
 
 def event_matches(text: str, event: dict) -> bool:
@@ -150,14 +234,22 @@ def event_matches(text: str, event: dict) -> bool:
 
 
 def passes_gate(text: str) -> tuple[bool, list[str]]:
+    """One explicit contract term is enough; otherwise three weak signals."""
     low = (text or "").lower()
-    hits = sorted({t for t in GATE_TERMS if t.lower() in low})
-    return (len(hits) >= 2, hits)
+    if low.lstrip().startswith("%pdf") or "%PDF-" in (text or "")[:400]:
+        return False, ["__binary_pdf__"]          # unreadable without a PDF parser
+    strong = sorted({t for t in STRONG_GATE_TERMS if t in low})
+    weak = sorted({t for t in WEAK_GATE_TERMS if t in low})
+    return (bool(strong) or len(weak) >= 3), strong + weak
 
 
-def research_event(event: dict, provider, fetcher, extractor, metrics: Metrics,
-                   dry_run: bool) -> dict:
-    """One event end to end. Returns a record; never raises for data reasons."""
+def gather_evidence(event: dict, provider, fetcher, metrics: Metrics,
+                    dry_run: bool) -> tuple[dict, list[dict]]:
+    """Discovery and retrieval only. Returns (record stub, usable evidence).
+
+    Split out from research_event so the extraction-quality audit can rebuild
+    the exact evidence set from cache without issuing a single new request.
+    """
     event_id = event["event_id"]
     queries = build_queries(event)
     evidence, planned = [], []
@@ -176,39 +268,55 @@ def research_event(event: dict, provider, fetcher, extractor, metrics: Metrics,
     # Retrieve only Tier 1 and Tier 2, best tier first, capped per event.
     seen, retrieved = set(), []
     for record in sorted(evidence, key=lambda r: (r["tier"], r["domain"])):
-        if record["tier"] >= 3 or record["url"] in seen or len(retrieved) >= 6:
+        if record["tier"] >= 3 or record["url"] in seen or len(retrieved) >= 8:
             continue
         seen.add(record["url"])
-        text = cached_page(record["url"], fetcher, metrics, dry_run)
+        text, status = cached_page(record["url"], fetcher, metrics, dry_run)
+        record["retrieval_status"] = status
         if not text:
+            record["retrieved"] = False
+            retrieved.append(record)          # kept, so failures are countable
             continue
         record["retrieved"] = True
         record["matches_event"] = event_matches(text, event)
         gated, hits = passes_gate(text)
         record["passes_gate"] = gated
         record["gate_terms"] = hits[:12]
+        record["gate_strength"] = ("strong" if any(t in STRONG_GATE_TERMS for t in hits)
+                                   else "weak" if gated else "none")
         record["text_chars"] = len(text)
-        record["text"] = text[:20000]
+        record["text"] = excerpt_around_player(text, event)[:20000]
         if record["matches_event"]:
             metrics.pages_relevant += 1
         if gated and record["matches_event"]:
             metrics.pages_passing_gate += 1
         retrieved.append(record)
 
-    usable = [r for r in retrieved if r.get("passes_gate") and r.get("matches_event")]
+    got_text = [r for r in retrieved if r.get("retrieved")]
+    usable = [r for r in got_text if r.get("passes_gate") and r.get("matches_event")]
     record = {
         "event_id": event_id,
         "player_id": int(event["player_id"]),
         "candidate_category": event.get("candidate_category"),
         "queries_planned": planned,
         "evidence_found": len(evidence),
-        "pages_retrieved": len(retrieved),
+        "pages_attempted": len(retrieved),
+        "pages_retrieved": len(got_text),
+        "pages_matching_event": sum(1 for r in got_text if r.get("matches_event")),
         "pages_usable": len(usable),
         "tier1_usable": sum(1 for r in usable if can_establish_alone(r["source_class"])),
         "source_classes_seen": sorted({r["source_class"] for r in evidence}),
         "extraction_status": None,
         "result": None,
     }
+    return record, usable
+
+
+def research_event(event: dict, provider, fetcher, extractor, metrics: Metrics,
+                   dry_run: bool) -> dict:
+    """One event end to end. Returns a record; never raises for data reasons."""
+    event_id = event["event_id"]
+    record, usable = gather_evidence(event, provider, fetcher, metrics, dry_run)
     if not usable:
         metrics.llm_skipped_insufficient_evidence += 1
         record["extraction_status"] = "insufficient_evidence"
@@ -216,9 +324,22 @@ def research_event(event: dict, provider, fetcher, extractor, metrics: Metrics,
     if dry_run:
         record["extraction_status"] = "would_extract"
         return record
+
+    # Extraction is the only step that costs real money, so its result is
+    # cached against the evidence it was derived from. A re-run after a crash
+    # re-reads rather than re-pays; changing the evidence changes the key.
+    fingerprint = hashlib.sha256(
+        (event_id + "|" + "|".join(sorted(r["url"] for r in usable))).encode()).hexdigest()
+    cache_file = _cache_path("extraction", fingerprint)
+    if cache_file.exists():
+        metrics.extraction_cache_hits += 1
+        record["extraction_status"] = "extracted"
+        record["result"] = json.loads(cache_file.read_text())
+        return record
     try:
         result = extractor(event, usable)
         metrics.llm_extraction_calls += 1
+        cache_file.write_text(json.dumps(result, ensure_ascii=False, default=str))
         record["extraction_status"] = "extracted"
         record["result"] = result
     except Exception as exc:                        # noqa: BLE001
@@ -259,6 +380,7 @@ def main() -> None:
         fetcher = OfficialPageFetcher()
         extractor = _build_extractor()
 
+    suffix = ("_dryrun" if args.dry_run else "") + (f"_{args.category}" if args.category else "")
     metrics = Metrics(model_used=os.environ.get("PARLEY_MODEL", "bedrock/claude-haiku-4-5"))
     records = []
     for _, row in pilot.iterrows():
@@ -269,13 +391,13 @@ def main() -> None:
         records.append(record)
         print(f"  {record['event_id'][:14]}  {str(row.player_name)[:22]:24s} "
               f"ev={record['evidence_found']:>3} pages={record['pages_retrieved']} "
-              f"usable={record['pages_usable']} -> {record['extraction_status']}")
+              f"usable={record['pages_usable']} -> {record['extraction_status']}", flush=True)
+        # Checkpoint after every event; a later crash cannot lose earlier work.
+        (output_dir / f"stage2_research_records{suffix}.json").write_text(
+            json.dumps(records, indent=2, ensure_ascii=False, default=str))
+        (output_dir / f"stage2_metrics{suffix}.json").write_text(
+            json.dumps(asdict(metrics), indent=2, default=str))
 
-    suffix = ("_dryrun" if args.dry_run else "") + (f"_{args.category}" if args.category else "")
-    (output_dir / f"stage2_research_records{suffix}.json").write_text(
-        json.dumps(records, indent=2, ensure_ascii=False, default=str))
-    (output_dir / f"stage2_metrics{suffix}.json").write_text(
-        json.dumps(asdict(metrics), indent=2, default=str))
     print("\n" + json.dumps(asdict(metrics), indent=2, default=str))
 
 
@@ -294,9 +416,20 @@ def _build_extractor():
     def extract(event: dict, usable: list[dict]):
         from ..source_discovery import SourceCandidate
         sources = [
-            SourceCandidate(url=r["url"], title=r.get("title") or "", snippet=r.get("text", "")[:12000],
-                            source_type=r["source_class"], published_date=None)
-            for r in usable
+            SourceCandidate(
+                source_url=r["url"],
+                source_title=r.get("title") or "",
+                publisher=r.get("domain"),
+                publication_date=None,
+                source_type=r["source_class"],
+                evidence_text=(r.get("text") or "")[:12000],
+                language="en",
+                evidence_id=f"ev{i:02d}",
+                source_tier=r.get("tier"),
+                retrieved_text=(r.get("text") or "")[:12000],
+                retrieval_status=r.get("retrieval_status"),
+            )
+            for i, r in enumerate(usable, start=1)
         ]
         return provider.research(event, sources).to_dict()
     return extract

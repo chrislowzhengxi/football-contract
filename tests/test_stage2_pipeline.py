@@ -40,6 +40,13 @@ def test_sources_are_classified(url, expected):
     assert classify(url, "Besiktas", "Burnley") == expected
 
 
+def test_unknown_domains_are_readable_but_not_self_sufficient():
+    """Reclassified to tier 2 after the smoke test: every event surfaced an
+    uncatalogued domain, and tier 3 meant they were never even retrieved."""
+    assert tier_of("unknown") == 2
+    assert not can_establish_alone("unknown")
+
+
 def test_only_tier1_can_establish_a_term_alone():
     for cls in ["official_club_buying", "official_club_selling", "regulatory_filing",
                 "financial_disclosure", "league_or_federation"]:
@@ -65,14 +72,14 @@ def test_listed_turkish_clubs_route_to_kap():
 
 def test_queries_are_built_from_stage1_identity():
     queries = build_queries(WEGHORST)
-    assert 1 <= len(queries) <= 4
+    assert 1 <= len(queries) <= 6
     joined = " ".join(q.query for q in queries)
     assert "Wout Weghorst" in joined
     assert "Besiktas" in joined and "Burnley" in joined
 
 
 def test_query_volume_is_bounded():
-    for n in (1, 2, 3, 4):
+    for n in (1, 2, 3, 4, 5, 6):
         assert len(build_queries(WEGHORST, max_queries=n)) <= n
 
 

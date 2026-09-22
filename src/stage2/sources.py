@@ -28,7 +28,11 @@ SOURCE_CLASS_TIER = {
     "archived_retrospective": 2,
     "aggregator_low_quality": 3,
     "transfermarkt_backbone": 3,   # our own backbone; never independent evidence
-    "unknown": 3,
+    # Tier 2, not 3: the 8-event smoke test showed an unclassified domain on
+    # every event. Treating them as tier 3 meant they were never retrieved, so
+    # any uncatalogued outlet carrying contract detail was invisible. They can
+    # be read, but like all tier 2 they cannot establish a term alone.
+    "unknown": 2,
 }
 
 # Official club sites for every club in the 26-event pilot. Keyed on the

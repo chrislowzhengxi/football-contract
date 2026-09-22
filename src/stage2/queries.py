@@ -114,7 +114,7 @@ def language_for(event: dict) -> tuple[str, str]:
     return "en", str(event.get("to_club_name") or event.get("from_club_name") or "")
 
 
-def build_queries(event: dict, max_queries: int = 4) -> list[Query]:
+def build_queries(event: dict, max_queries: int = 6) -> list[Query]:
     """A small, ordered set of queries. Cheapest-highest-precision first."""
     event_id = event["event_id"]
     player = str(event.get("player_name", "")).strip()
@@ -127,36 +127,57 @@ def build_queries(event: dict, max_queries: int = 4) -> list[Query]:
     language, language_club = language_for(event)
     out: list[Query] = []
 
-    # 1. Buying club's own announcement - highest precision available.
-    buying = official_domain(to_club)
-    if buying:
-        out.append(Query(event_id, f'site:{buying} "{player}"', "official announcement, buying club",
-                         None, "en", "official_club_buying"))
-    # 2. Regulated filing, where a club is listed. Untested class; the pilot
-    #    contains three Borsa Istanbul clubs whose filings go through KAP.
+    # Priority order corrected after the 26-event pilot. Measured yields were:
+    # national media 100%, uncatalogued domains 23%, official club pages 7%.
+    # The single richest document found was a listed club's annual report,
+    # which itemises fee, options, instalments and sell-on for every transfer
+    # of the season. Official club pages are kept, but last and only one.
+
+    # 1-2. Regulated filings first, for clubs that are publicly listed.
     for club in (to_club, from_club):
         venue = disclosure_venue(club)
-        if venue and len(out) < max_queries:
-            out.append(Query(event_id, f'site:{venue[0]} "{player}" {club}',
-                             f"regulated disclosure ({venue[1]})", None, "en",
-                             "regulatory_filing" if venue[0] == "kap.org.tr" else "financial_disclosure"))
+        if not venue:
+            continue
+        cls = "regulatory_filing" if venue[0] == "kap.org.tr" else "financial_disclosure"
+        out.append(Query(event_id, f'site:{venue[0]} "{player}" {club}',
+                         f"regulated disclosure ({venue[1]})", None, "en", cls))
+        out.append(Query(event_id,
+                         f'site:{venue[0]} {club} faaliyet raporu futbolcu transfer {year}'
+                         if venue[0] == "kap.org.tr"
+                         else f'site:{venue[0]} {club} annual report transfer {year}',
+                         "club annual report (itemised transfer disclosures)", None,
+                         "tr" if venue[0] == "kap.org.tr" else "en", cls))
+        break
+
+    # 3-4. Field-aware media queries on the two leading mechanisms.
+    for mechanism in (lead, second):
+        if len(out) >= max_queries:
             break
-    # 3. Field-aware general query in English on the leading mechanism.
-    terms = VOCABULARY[lead]["en"][0]
+        out.append(Query(event_id,
+                         f'"{player}" "{from_club}" "{to_club}" '
+                         f'{VOCABULARY[mechanism]["en"][0]} {year}',
+                         f"field query: {mechanism}", mechanism, "en", "national_media_major"))
+
+    # 5. Local-language query, paired with the club that speaks the language.
     if len(out) < max_queries:
-        out.append(Query(event_id, f'"{player}" "{from_club}" "{to_club}" {terms} {year}',
-                         f"field query: {lead}", lead, "en", "national_media_major"))
-    # 4. Local-language query on the second mechanism, or English if no local.
-    if len(out) < max_queries:
-        phrases = VOCABULARY[second]
+        phrases = VOCABULARY[lead]
         code = language if language in phrases else "en"
         club_for_term = language_club if code != "en" else (to_club or from_club)
-        out.append(Query(event_id, f'"{player}" {club_for_term} {phrases[code][0]}',
-                         f"field query: {second} ({code})", second, code,
+        out.append(Query(event_id, f'"{player}" {club_for_term} {phrases[code][0]} {year}',
+                         f"field query: {lead} ({code})", lead, code,
                          "local_club_media" if code != "en" else "national_media_major"))
-    # 5. Selling club, if there is room left.
-    selling = official_domain(from_club)
-    if selling and len(out) < max_queries:
-        out.append(Query(event_id, f'site:{selling} "{player}"', "official announcement, selling club",
-                         None, "en", "official_club_selling"))
+
+    # 6. Open deal-structure query - the phrasing media actually use.
+    if len(out) < max_queries:
+        out.append(Query(event_id,
+                         f'"{player}" {from_club} {to_club} transfer deal structure fee clause',
+                         "deal structure, open web", None, "en", "national_media_major"))
+
+    # 7. Official club page, as supporting evidence only. Deliberately one
+    # query, not two: 74 official pages in the pilot yielded 6 usable ones.
+    buying = official_domain(to_club) or official_domain(from_club)
+    if buying and len(out) < max_queries:
+        out.append(Query(event_id, f'site:{buying} "{player}"',
+                         "official club announcement (supporting evidence)", None, "en",
+                         "official_club_buying"))
     return out[:max_queries]
