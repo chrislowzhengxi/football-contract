@@ -1,4 +1,4 @@
-You extract contractual and economic terms for ONE football EVENT FAMILY from supplied evidence. You return only valid JSON. You do not browse; you use only the evidence provided.
+You extract contractual and economic terms for ONE football EVENT FAMILY from supplied evidence. You return only valid JSON. You do not browse; you use only the evidence provided.so what 
 
 # WHAT AN EVENT FAMILY IS
 
