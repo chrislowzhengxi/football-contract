@@ -290,3 +290,71 @@ def test_missing_values_are_not_turned_into_zero(real):
     # Only rows that genuinely carry a fee have one; nothing was filled with 0.
     assert (L.ending_fee_on_return_eur.dropna() > 0).all()
     assert L.ending_fee_on_return_eur.isna().sum() == len(L) - L.ending_fee_on_return_eur.notna().sum()
+
+
+# ---------------------------------------------------------------------------
+# Scope estimator
+# ---------------------------------------------------------------------------
+
+GEO = pd.DataFrame({"club_id": [1, 2, 3, 5], "country": ["Italy", "Italy", "Scotland", "Italy"],
+                    "confederation": ["UEFA"] * 4})
+
+
+@pytest.fixture
+def scoped(monkeypatch):
+    """A tiny universe: a realised Italian loan (22/23), a loan with only a
+    scheduled return (24/25), an open loan (24/25), and a loan to an unmapped
+    club (Atalanta U19, 22/23)."""
+    from src.analysis import loan_scope
+    moves = [("2022-08-01", 1, 2, "loan"), ("2023-06-30", 2, 1, "loan_return"),
+             ("2024-08-01", 1, 5, "loan"), ("2025-06-30", 5, 1, "loan_return"),
+             ("2024-09-01", 2, 3, "loan"),
+             ("2022-09-01", 5, 4, "loan"), ("2023-06-30", 4, 5, "loan_return")]
+    frames = [history(*moves[i:j], player_id=pid)
+              for pid, (i, j) in enumerate([(0, 2), (2, 4), (4, 5), (5, 7)], start=1)]
+    for f, season in zip(frames, ["2022/23", "2024/25", "2024/25", "2022/23"]):
+        f["season"] = season
+        f["event_id"] = f.player_id.astype(str) + f.event_id
+    frames[1].loc[1, "transfermarkt_future_transfer"] = True     # the scheduled return
+    df = pd.concat(frames, ignore_index=True)
+    u = build_universe(df, GEO)
+    monkeypatch.setattr(loan_scope, "universe", lambda: u)
+    return loan_scope
+
+
+def test_scope_defaults_count_every_loan(scoped):
+    r = scoped.scope()
+    assert r["loan_episodes"] == 4 and r["loans_with_recorded_ending"] == 3
+    assert r["unresolved_or_open_loans"] == 1
+
+
+def test_open_loans_are_not_counted_as_non_plain_endings(scoped):
+    assert scoped.scope()["raw_label_not_plain_end_of_loan"] == 0
+
+
+def test_realised_only_drops_scheduled_endings_but_keeps_open_loans(scoped):
+    r = scoped.scope(realised_only=True)
+    assert r["loan_episodes"] == 3
+    assert r["unresolved_or_open_loans"] == 1
+
+
+def test_through_season_stops_at_the_season(scoped):
+    assert scoped.scope(through_season="2023/24")["loan_episodes"] == 2
+    assert scoped.scope(through_season="24/25")["loan_episodes"] == 4
+
+
+def test_country_modes_never_guess_an_unmapped_club(scoped):
+    # Empoli -> Atalanta U19: the U19 side is unmapped, so `both` excludes it.
+    assert scoped.scope(countries=["Italy"], country_mode="both")["loan_episodes"] == 2
+    # `either` admits it (one mapped Italian club) and the Torino -> Rangers loan.
+    assert scoped.scope(countries=["Italy"], country_mode="either")["loan_episodes"] == 4
+
+
+def test_new_filters_leave_existing_real_counts_unchanged(real, monkeypatch):
+    from src.analysis import loan_scope
+    monkeypatch.setattr(loan_scope, "universe", lambda: real["u"])
+    kw = dict(countries=["Italy", "England", "Spain"], seasons=["2021/22", "2022/23", "2023/24"])
+    assert loan_scope.scope(**kw, country_mode="both")["loan_episodes"] == 1162
+    assert loan_scope.scope(**kw, country_mode="either")["loan_episodes"] == 2408
+    assert loan_scope.scope()["loan_episodes"] == 29699
+    assert loan_scope.scope()["raw_label_not_plain_end_of_loan"] == 94

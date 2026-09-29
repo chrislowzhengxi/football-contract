@@ -19,6 +19,7 @@ from ..stage2.event_family import (FOLLOW_ON_IMMEDIATE_DAYS, FOLLOW_ON_WINDOW_DA
 from .loan_episodes import (CANONICAL_CSV, ECONOMIC_ENDINGS, EXPECTED_ROWS, ROOT,
                             build_universe, club_geography, load_canonical)
 from .loan_scope import NONSTANDARD, scope, token_profile, workload
+from .provenance_audit import source_file_capture
 
 OUT = ROOT / "data" / "outputs" / "rebuild"
 AUDIT_SEED = 20260924
@@ -30,6 +31,11 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def display_country(name: str) -> str:
+    """'Korea, South' reads as two countries inside a comma-separated list."""
+    return {"Korea, South": "South Korea"}.get(name, name)
 
 
 def pct(n, d) -> str:
@@ -60,6 +66,14 @@ def upstream_facts() -> dict:
             "games": q("select count(*) from games")[0][0],
             "max_game_date": str(q("select max(date) from games")[0][0]),
             "competitions": comps, "game_seasons": seasons,
+            "league_first_season": con.sql("""
+                select competition_id, min(season) first_season from games
+                where competition_type = 'domestic_league' group by 1""").df(),
+            "players_by_last_season": con.sql("""
+                with tp as (select distinct player_id from transfers)
+                select try_cast(p.last_season as int) last_season, count(*) players,
+                       count(tp.player_id) with_transfers
+                from players p left join tp using (player_id) group by 1 order by 1""").df(),
         }
     finally:
         con.close()
@@ -108,11 +122,16 @@ def episode_type_counts(u) -> pd.DataFrame:
 def sensitivities(u) -> dict:
     ep, L = u.episodes, u.loans
     youth = ep.is_youth_or_reserve_side.fillna(False)
-    conv_follow = set(L.loc[L.economic_ending == "purchase_option_or_permanent_conversion",
-                            "follow_on_event_id"].dropna())
+    conv = L[L.economic_ending == "purchase_option_or_permanent_conversion"]
+    # The permanent leg is the follow-on move after a return, or, when there
+    # was no return row, the move that ended the loan.
+    conv_follow = (set(conv.follow_on_event_id.dropna())
+                   | set(conv.loc[conv.match_reason == "converted_to_permanent_same_clubs",
+                                  "terminal_event_id"].dropna()))
     return {
         "episodes_involving_youth_or_reserve_side": int(youth.sum()),
         "episodes_senior_only": int((~youth).sum()),
+        "loan_episodes_senior_only": int((~youth & (ep.episode_type == "loan")).sum()),
         "permanent_episodes_that_follow_a_loan_conversion": int(ep.event_id.isin(conv_follow).sum()),
         "episodes_flagged_future_by_transfermarkt": int(ep.transfermarkt_future_transfer.sum()),
     }
@@ -182,11 +201,22 @@ def date_buckets(frame: pd.DataFrame) -> dict:
             "of_other_may31_n": m, "of_other_may31_pct": p(m, n)}
 
 
+def latest_completed_season(u) -> str:
+    """The last season (July-June) that had ended before the latest realised
+    movement in the snapshot. Later seasons' loans mostly have scheduled ends."""
+    r = u.rows
+    d = r.loc[~r.transfermarkt_future_transfer.astype(bool), "_date"].max()
+    start = (d.year if d.month >= 7 else d.year - 1) - 1
+    return f"{start}/{str(start + 1)[2:]}"
+
+
 def europe_end_dates(u) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     L = u.loans
     eu_both = (L.from_confederation == "UEFA") & (L.to_confederation == "UEFA")
     E = L[eu_both]
     ended = E[E.terminal_date.notna()]
+    last = latest_completed_season(u)
+    through = f"realised, loans through {last}"
     coverage = {
         "all_loan_episodes": int(len(L)),
         "loans_with_a_club_of_unknown_country": int((L.from_country.isna() | L.to_country.isna()).sum()),
@@ -206,7 +236,9 @@ def europe_end_dates(u) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     ] + [(f"economic: {c}", ended[ended.economic_ending == c]) for c in NONSTANDARD]
     rows = []
     for name, fr in pops:
-        for sl, sub in (("all", fr), ("realised", fr[~fr.terminal_scheduled_future]),
+        realised = fr[~fr.terminal_scheduled_future]
+        for sl, sub in (("all", fr), ("realised", realised),
+                        (through, realised[realised.loan_season <= last]),
                         ("scheduled (future-flagged)", fr[fr.terminal_scheduled_future])):
             rows.append({"population": name, "slice": sl, **date_buckets(sub)})
     by_season = []
@@ -215,12 +247,17 @@ def europe_end_dates(u) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
                           "nonstandard_N": int(g.economic_ending.isin(NONSTANDARD).sum()),
                           **{f"nonstandard_{k}": v for k, v in
                              date_buckets(g[g.economic_ending.isin(NONSTANDARD)]).items() if k != "N"}})
-    by_country = []
+    by_country, by_country_through = [], []
     for c, g in ended.groupby("from_country"):
         if len(g) >= 50:
             by_country.append({"lender_country": c, **date_buckets(g)})
+            g2 = g[~g.terminal_scheduled_future & (g.loan_season <= last)]
+            by_country_through.append({"lender_country": c, **date_buckets(g2)})
     coverage["by_lender_country"] = (pd.DataFrame(by_country)
                                      .sort_values("N", ascending=False).reset_index(drop=True))
+    coverage["by_lender_country_through"] = (pd.DataFrame(by_country_through)
+                                             .sort_values("N", ascending=False).reset_index(drop=True))
+    coverage["through_slice"] = through
     top_dates = ended.terminal_date.dt.strftime("%m-%d").value_counts().head(8)
     coverage["top_dates"] = top_dates
     return pd.DataFrame(rows), coverage, pd.DataFrame(by_season)
@@ -472,11 +509,18 @@ def write_report(ctx: dict) -> str:
     w("")
     w("Two things to hold in mind while reading the numbers:")
     w("")
-    w(f"1. **The dataset is career histories, not a census of any league.** Every row belongs to one of "
-      f"{up['players_with_transfers']:,} players who appeared in a competition the upstream snapshot covers "
-      f"between 2012/13 and 2025/26; transfers back to 1993 are those players' earlier careers. Counts "
-      f"before about 2012 are therefore survivor samples and rise over time for that reason, not because "
-      f"the market grew.")
+    pls = up["players_by_last_season"]
+    old = pls[pls.last_season <= 2021]
+    w(f"1. **The dataset is a sample of players, not a census of any league.** Every row belongs to one of "
+      f"{up['players_with_transfers']:,} players whose full Transfermarkt transfer history the upstream "
+      "project downloaded. It downloaded histories only for players on covered squads in 2023/24, 2024/25 "
+      f"and 2025/26: the {int(old.players.sum()):,} players whose last covered season was "
+      f"{int(old.last_season.min())}/{str(int(old.last_season.min()) + 1)[2:]}–2021/22 have "
+      + ("no" if int(old.with_transfers.sum()) == 0 else f"{int(old.with_transfers.sum()):,}") +
+      " transfer rows. Each history runs back to the player's first youth "
+      "registration, which is why rows start in 1993/94. Every season before 2023/24 therefore holds only "
+      "the earlier moves of players still active in 2023–2026; counts rise over time because that cohort "
+      "ages, not because the market grew. Provenance evidence: `dataset_provenance_and_coverage.md`.")
     w(f"2. **Club country is known only for {len(mapped_clubs & ep_clubs):,} of {len(ep_clubs):,} clubs** "
       f"(those in a covered first-tier league or that played a covered national cup). Both clubs' "
       f"countries are known for {pct(int((ep.from_country.notna() & ep.to_country.notna()).sum()), n_ep)} "
@@ -670,6 +714,15 @@ def write_report(ctx: dict) -> str:
       f"(N = {int(eal_real.N):,}). Scheduled endings sit on 30 June almost by construction, so "
       "pooling them inflates the 30 June share.")
     w("")
+    cap = ctx["capture"]
+    w("**\"Realised\" means realised when that player's history was captured, and capture dates differ.** "
+      "Each upstream transfer file was captured once, between its last realised and first scheduled date: " +
+      "; ".join(f"{r.source_season_file} file ({r.players:,} players) between {r.last_realised_date} and "
+                f"{r.first_scheduled_date}" for r in cap.itertuples()) +
+      f". So loans through {ctx['europe'][1]['through_slice'].split()[-1]} are complete only for players "
+      "whose history was captured after that season ended; later moves of players captured in July 2024 "
+      "are absent, not merely scheduled. These are descriptive statistics of the observed dataset.")
+    w("")
     td = eucov["top_dates"]
     w("The most common end dates (all European endings): " + ", ".join(
         f"{k.replace('06-30', '30 Jun').replace('05-31', '31 May').replace('12-31', '31 Dec')} "
@@ -724,17 +777,26 @@ def write_report(ctx: dict) -> str:
       f"`{up['commit'][:10]}`), which is scraped from Transfermarkt and also published on Kaggle. "
       "Everything below is read from that file; nothing was looked up online.")
     w("")
-    w(f"- **{len(leagues)} first-tier domestic leagues**: " + ", ".join(
-        f"{r.country_name}" for r in leagues.itertuples()) + ".")
+    lfs = up["league_first_season"].set_index("competition_id").first_season
+    first = leagues.competition_id.map(lfs)
+    early, late = leagues[first == first.min()], leagues[first != first.min()]
+    w(f"- **{len(leagues)} first-tier domestic leagues in the `competitions` table, but not for the whole "
+      f"period.** Match data for {len(early)} European leagues starts in {int(first.min())}/"
+      f"{str(int(first.min()) + 1)[2:]}: " + ", ".join(display_country(r.country_name) for r in early.itertuples()) +
+      f". The other {len(late)} were added from {int(late.competition_id.map(lfs).min())}/"
+      f"{str(int(late.competition_id.map(lfs).min()) + 1)[2:]}: " +
+      ", ".join(display_country(r.country_name) for r in late.itertuples()) + ".")
     w(f"- **{len(cups)} national cups**: " + ", ".join(f"{r.country_name}" for r in cups.itertuples()) +
       "; plus domestic super cups and the UEFA club competitions.")
     gs = up["game_seasons"].set_index("type")
     w(f"- Match data runs from the {gs.loc['domestic_league', 'first_season']} to the "
       f"{gs.loc['domestic_league', 'last_season']} season (last match {up['max_game_date']}).")
-    w(f"- {up['players']:,} players appear in those competitions; {up['players_with_transfers']:,} of them "
-      f"have transfer histories, which make up all {up['transfer_rows']:,} transfer rows. Transfers are "
-      "therefore complete *careers of players who reached a covered league*, including moves between "
-      "clubs the snapshot does not otherwise cover — not all transfers made by covered clubs.")
+    w(f"- {up['players']:,} players appear on a covered squad in some season from 2012/13 (the `players` "
+      f"table). Only {up['players_with_transfers']:,} have transfer histories — the recent cohort whose "
+      f"histories were fetched from 2023/24–2025/26 squads — and they make up all {up['transfer_rows']:,} "
+      "transfer rows. Transfers are therefore the complete careers of that recent cohort, including moves "
+      "between clubs the snapshot does not otherwise cover — not all transfers made by covered clubs, and "
+      "not a census of any season.")
     w(f"- Club country: {int((geo.geo_source == 'clubs_table_domestic_league').sum()):,} clubs from the "
       f"snapshot's `clubs` table (domestic league → country), plus "
       f"{int((geo.geo_source == 'domestic_competition_participation').sum()):,} clubs that played in a "
@@ -750,7 +812,8 @@ def write_report(ctx: dict) -> str:
     w("")
     bs = ctx["by_season"]
     recent = bs[bs.loan_season >= "2012/13"]
-    w("Loans by season from 2012/13 (full table from 1993/94 in `stage1_loans_by_season.csv`):")
+    w("Loans by season from 2012/13, shown for brevity (full table from 1993/94 in "
+      "`stage1_loans_by_season.csv`). 2012/13 is not a boundary in the transfer data:")
     w("")
     w(md_table(recent, ["loan_season", "loans", "with_matched_return", "open_or_unmatched",
                         "raw_label_not_plain_end_of_loan", "fee_bearing_returns", "nonstandard_any",
@@ -770,9 +833,11 @@ def write_report(ctx: dict) -> str:
     w("    --seasons 2021/22,2022/23,2023/24 --country-mode both")
     w("```")
     w("")
-    w("`--country-mode both` requires both clubs in the selected countries; `either` requires one. "
-      "`--confederation UEFA` filters by confederation instead. It is also callable as "
-      "`scope(countries=[...], seasons=[...], country_mode='both')`.")
+    w("`--country-mode both` requires both clubs to be mapped and in the selected countries; `either` "
+      "requires at least one mapped club in them. Unmapped clubs are never guessed, so neither mode is a "
+      "complete census. `--confederation UEFA` filters by confederation instead; `--realised-only` drops "
+      "scheduled (future-flagged) moves and endings; `--through-season 2024/25` stops at a season. It is "
+      "also callable as `scope(countries=[...], seasons=[...], country_mode='both')`.")
     w("")
     w(md_table(ctx["scenarios"]))
     w("")
@@ -853,9 +918,10 @@ def write_report(ctx: dict) -> str:
       f"({int(bsi.loc[last, 'scheduled_future_endings']):,} of {int(bsi.loc[last, 'loans']):,} have only a "
       "scheduled end), so their endings cannot be classified yet. Restricting to completed seasons "
       "avoids that censoring.")
-    w("- **Country filters are conservative by construction.** With `both` clubs required, a loan to an "
-      "unmapped lower-league or youth club drops out, so the count is a floor on domestic loans; `either` "
-      "gives the corresponding ceiling.")
+    w("- **Country filters are not a census.** `both` = both clubs mapped and in the selected countries, "
+      "so a loan to an unmapped lower-league or youth club drops out; `either` = at least one mapped club "
+      "in the selected countries, which also admits cross-border loans. A loan between two unmapped clubs "
+      "is missed by both, so neither is an exact lower or upper bound.")
     w("- **The volume that drives cost is the number of families that reach an extraction call.** At "
       f"BASE token use, every 1,000 loans that reach one cost about "
       f"{1000 * tp.get('total_tokens_mean', 0) * tp.get('calls_per_family', 1) / 1e6:,.1f}M tokens"
@@ -919,7 +985,9 @@ def main() -> dict:
     out = {
         "stage1_transfer_universe_counts.csv": (
             pd.concat([wf.assign(section="waterfall"),
-                       ctx_types(u).assign(section="episode_type")], ignore_index=True),
+                       ctx_types(u).assign(section="episode_type"),
+                       pd.DataFrame([{"step": k, "rows": v} for k, v in sensitivities(u).items()]
+                                    ).assign(section="sensitivity")], ignore_index=True),
             "waterfall from rows to real transfer episodes, and episodes by type"),
         "stage1_dataset_coverage.csv": (coverage_tables(u),
                                         "episodes by season, country, country × season, type × season"),
@@ -929,6 +997,9 @@ def main() -> dict:
             pd.concat([europe[0].assign(table="by_population"),
                        europe[1]["by_lender_country"].assign(table="by_lender_country",
                                                             population="all matched endings", slice="all"),
+                       europe[1]["by_lender_country_through"].assign(
+                           table="by_lender_country", population="all matched endings",
+                           slice=europe[1]["through_slice"]),
                        europe[2].assign(table="by_loan_season", population="all matched endings",
                                         slice="all")], ignore_index=True),
             "European loan end dates by population, realised vs scheduled, and by season"),
@@ -943,7 +1014,8 @@ def main() -> dict:
         frame.to_csv(OUT / name, index=False)
 
     ctx = {
-        "u": u, "upstream": upstream_facts(), "waterfall": wf, "outcomes": outcomes,
+        "u": u, "upstream": upstream_facts(), "capture": source_file_capture(u.rows),
+        "waterfall": wf, "outcomes": outcomes,
         "europe": europe, "types": ctx_types(u), "sensitivities": sensitivities(u),
         "stage2_sensitivity": stage2_rule_sensitivity(u), "by_country": by_country,
         "by_season": by_season, "scenarios": scenarios, "geo": geo, "sha": sha_before,
