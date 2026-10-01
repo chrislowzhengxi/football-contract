@@ -34,7 +34,7 @@ from .stage1_scope_report import (OUT, date_buckets, europe_end_dates, latest_co
 SQUAD_CSV = OUT / "dataset_provenance_squad_coverage.csv"
 LEAGUE_CSV = OUT / "dataset_provenance_league_coverage.csv"
 FACTS_JSON = OUT / "dataset_provenance_upstream_facts.json"
-ANSWERS_MD = OUT / "daniel_stage1_scope_answers.md"
+ANSWERS_MD = OUT / "d_stage1_scope_answers.md"
 PROVENANCE_MD = OUT / "dataset_provenance_and_coverage.md"
 FINAL_MD = OUT / "daniel_dataset_scope_final.md"
 
@@ -423,7 +423,7 @@ def render(N: dict) -> str:
       f"`python -m src.analysis.daniel_scope_final` from the frozen Stage 1C table ({f0(q1['raw_rows'])} rows, "
       f"SHA-256 `{N['stage1c_sha256'][:8]}…{N['stage1c_sha256'][-6:]}`, unchanged), the upstream DuckDB snapshot, "
       "the provenance audit and the Stage 2 extraction cache. Nothing was scraped and no new transfer histories were "
-      "acquired. This document supersedes `daniel_stage1_scope_answers.md`: its counts are unchanged, and its "
+      f"acquired. This document supersedes `{ANSWERS_MD.name}`: its counts are unchanged, and its "
       "description of how players were selected is corrected.*")
     w("")
     w("## Headline numbers")
