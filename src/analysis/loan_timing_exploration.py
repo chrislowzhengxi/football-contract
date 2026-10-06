@@ -730,17 +730,14 @@ def _log_axis(ax, right=730, drop=()):
     ax.minorticks_off()
 
 
-def figures(N: dict, tb: dict) -> dict[str, str]:
+def plot_lag_histogram(SB: pd.DataFrame, title: str, path) -> dict:
+    """Daily histogram of `next_move_gap_days`, stacked by return date, long tail folded into one bar.
+    Needs columns `next_move_gap_days` and `return_date_group`. Returns the annotated values."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    FIG.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
-    SB = tb["SB"]
-    paths = {}
-
-    # 1. histogram, long tail folded into one bar
     cap, clip = 120, 120
     fig, ax = plt.subplots(figsize=(10, 4.8))
     bottom = np.zeros(cap + 2)
@@ -764,33 +761,62 @@ def figures(N: dict, tb: dict) -> dict[str, str]:
     ax.set_xticklabels([str(x) for x in range(0, cap + 1, 10)] + [f">{cap}"])
     ax.set_xlabel("Days from the loan return to the permanent move back to the borrower")
     ax.set_ylabel("Loans")
-    ax.set_title(f"Return → permanent move back to the borrower, any lag (N = {len(SB):,})", loc="left")
+    ax.set_title(title, loc="left")
     ax.legend(frameon=False, loc="center right")
     fig.tight_layout()
-    paths["hist"] = "figures/loan_timing_fig1_return_to_permanent_lag_histogram.png"
-    fig.savefig(OUT / paths["hist"], dpi=160)
+    fig.savefig(path, dpi=160)
     plt.close(fig)
+    return {"N": len(SB), "day1": day1, "over_cap": over}
 
-    # 2. ECDF
+
+def plot_lag_ecdf(SB: pd.DataFrame, title: str, path,
+                  marks=(FOLLOW_ON_IMMEDIATE_DAYS, FOLLOW_ON_WINDOW_DAYS)) -> dict:
+    """Cumulative share by lag, overall and for 30 Jun / 31 Dec and 31 May returns. Every annotated
+    share is computed from SB. Returns the annotated values."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
+    lag = SB.next_move_gap_days.astype(int)
     fig, ax = plt.subplots(figsize=(9, 4.8))
     _ecdf(ax, SB.next_move_gap_days, color="#1a202c", lw=2.2, label=f"all ({len(SB):,})")
+    groups = {}
     for grp in ("return on 30 Jun or 31 Dec", "return on 31 May"):
         g = SB.loc[SB.return_date_group == grp, "next_move_gap_days"]
+        groups[grp] = len(g)
         _ecdf(ax, g, color=COLORS[grp], lw=1.2, label=f"{grp} ({len(g):,})")
-    st = N["p1_any_lag_stats"]
-    for x in (FOLLOW_ON_IMMEDIATE_DAYS, FOLLOW_ON_WINDOW_DAYS):
+    shares = {}
+    for x in marks:
+        shares[x] = float(((lag >= 0) & (lag <= x)).mean())
         ax.axvline(x, color="#555", ls=":", lw=1)
-        ax.text(x * 1.04, 8, f"{x} d: {100 * st[f'within_{x}_share']:.1f}%", fontsize=8, color="#555")
+        ax.text(x * 1.04, 8, f"{x} d: {100 * shares[x]:.1f}%", fontsize=8, color="#555")
     _log_axis(ax)
     ax.set_ylim(0, 100)
     ax.set_xlabel("Days from the loan return (log scale above 1 day)")
     ax.set_ylabel("Cumulative share of cases (%)")
-    ax.set_title("Cumulative share of permanent moves back to the borrower, by lag", loc="left")
+    ax.set_title(title, loc="left")
     ax.legend(frameon=False, loc="center left")
     fig.tight_layout()
-    paths["ecdf"] = "figures/loan_timing_fig2_return_to_permanent_ecdf.png"
-    fig.savefig(OUT / paths["ecdf"], dpi=160)
+    fig.savefig(path, dpi=160)
     plt.close(fig)
+    return {"N": len(SB), "shares": shares, "groups": groups}
+
+
+def figures(N: dict, tb: dict) -> dict[str, str]:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    FIG.mkdir(parents=True, exist_ok=True)
+    plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
+    SB = tb["SB"]
+    paths = {}
+
+    paths["hist"] = "figures/loan_timing_fig1_return_to_permanent_lag_histogram.png"
+    plot_lag_histogram(SB, f"Return → permanent move back to the borrower, any lag (N = {len(SB):,})", OUT / paths["hist"])
+    paths["ecdf"] = "figures/loan_timing_fig2_return_to_permanent_ecdf.png"
+    plot_lag_ecdf(SB, "Cumulative share of permanent moves back to the borrower, by lag", OUT / paths["ecdf"])
 
     # 3. calendar dates
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.6), gridspec_kw={"width_ratios": [1.3, 1]})
