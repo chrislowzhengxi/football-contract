@@ -102,6 +102,59 @@ def stream_players(
     return found
 
 
+def file_md5(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.md5()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cached_manifest(cache_dir: Path | None = None) -> list[dict]:
+    """The snapshot manifest, cached beside the season files. It is addressed by SNAPSHOT_DIR_MD5, so a cached
+    copy can never go stale."""
+    path = (cache_dir or CACHE_DIR) / f"{SNAPSHOT_DIR_MD5}.dir.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    manifest = snapshot_manifest()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=1))
+    return manifest
+
+
+def cache_season_files(seasons: list[str] | None = None, cache_dir: Path | None = None) -> dict[str, dict]:
+    """Download each season's transfers.json once into the local cache and verify it against the snapshot md5.
+
+    Later reads (`stream_players`) use the cached copy, so reruns make no web request. A cached file whose md5
+    matches the manifest is never downloaded again. Returns {season: {"path", "md5", "verified", "downloaded"}}.
+    """
+    cache_dir = cache_dir or CACHE_DIR
+    manifest = cached_manifest(cache_dir)
+    out = {}
+    for season in seasons or SEASON_PREFERENCE:
+        md5 = transfers_file_md5(manifest, season)
+        if md5 is None:
+            continue
+        path = cache_dir / season / "transfers.json"
+        downloaded = False
+        if not (path.exists() and file_md5(path) == md5):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".part")
+            with _open(_blob_url(md5)) as response, tmp.open("wb") as f:
+                for chunk in iter(lambda: response.read(1 << 20), b""):
+                    f.write(chunk)
+            got = file_md5(tmp)
+            if got != md5:
+                tmp.unlink()
+                raise RuntimeError(f"{season}/transfers.json md5 {got} does not match the snapshot manifest {md5}")
+            tmp.replace(path)
+            downloaded = True
+        out[season] = {"path": str(path), "md5": md5, "verified": True, "downloaded": downloaded}
+    return out
+
+
 def collect_players(player_ids: set[int], cache_dir: Path | None = None) -> tuple[dict[int, dict], dict[int, str]]:
     """Resolve each player from the most recent season file that has them.
 
