@@ -25,8 +25,8 @@ def test_metadata_capture_is_intact_and_holds_no_injury_data():
 
 def test_nothing_downloaded_and_conditional_outputs_absent(N):
     assert N["downloaded_injury_files"] == 0
-    for name in ext.NOT_WRITTEN:
-        assert not (ext.OUT / name).exists()
+    for name in ext.NOT_WRITTEN:                                 # that phase never writes them (a later phase may)
+        assert name not in {p.name for p in ext.WRITES}
     src = inspect.getsource(ext)
     assert "urlopen" not in src and "requests" not in src
 
