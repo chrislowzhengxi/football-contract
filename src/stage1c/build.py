@@ -347,6 +347,29 @@ def population_report(canonical: pd.DataFrame, meta: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# A focused column set, ordered so a row can be read straight across
+# against a Transfermarkt transfer-history page. The full 43-column record
+# for these events is in the canonical file.
+SAMPLE_COLUMNS = [
+    "player_id", "player_name", "date_of_birth",
+    "age_at_transfer", "transfer_season", "transfer_date",
+    "from_club_name", "to_club_name",
+    "fee_display_raw", "transfer_type_raw", "transfer_type_normalized",
+    "permanent_transfer_fee_eur", "loan_fee_eur", "fee_on_return_eur",
+    "fee_disclosure_status", "market_value_display", "market_value_eur",
+    "duckdb_transfer_fee", "stage1_heuristic_class", "heuristic_agrees_with_label",
+    "is_senior_move", "is_internal_move", "transfermarkt_future_transfer",
+    "is_research_target", "research_exclusion_reason",
+    "transfermarkt_transfer_id", "event_id",
+]
+
+
+def validation_sample(canonical: pd.DataFrame) -> pd.DataFrame:
+    """The audited players' events, ordered by player_id then date."""
+    return canonical[canonical.player_id.isin(validation_player_ids())].sort_values(
+        ["player_id", "transfer_date"])[SAMPLE_COLUMNS]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stage 1C: build the canonical backbone")
     parser.add_argument("--backbone", default=str(BACKBONE_CSV))
@@ -360,23 +383,7 @@ def main() -> None:
     canonical = build_canonical(backbone, enrichment)
     canonical.to_csv(output_dir / "stage1c_canonical_transfers.csv", index=False)
 
-    # A focused column set, ordered so a row can be read straight across
-    # against a Transfermarkt transfer-history page. The full 43-column record
-    # for these events is in the canonical file.
-    sample_columns = [
-        "player_id", "player_name", "date_of_birth",
-        "age_at_transfer", "transfer_season", "transfer_date",
-        "from_club_name", "to_club_name",
-        "fee_display_raw", "transfer_type_raw", "transfer_type_normalized",
-        "permanent_transfer_fee_eur", "loan_fee_eur", "fee_on_return_eur",
-        "fee_disclosure_status", "market_value_display", "market_value_eur",
-        "duckdb_transfer_fee", "stage1_heuristic_class", "heuristic_agrees_with_label",
-        "is_senior_move", "is_internal_move", "transfermarkt_future_transfer",
-        "is_research_target", "research_exclusion_reason",
-        "transfermarkt_transfer_id", "event_id",
-    ]
-    sample = canonical[canonical.player_id.isin(validation_player_ids())].sort_values(
-        ["player_id", "transfer_date"])[sample_columns]
+    sample = validation_sample(canonical)
     sample.to_csv(output_dir / "stage1c_validation_sample.csv", index=False)
 
     (output_dir / "stage1c_research_population.md").write_text(
