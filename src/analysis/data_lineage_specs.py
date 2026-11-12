@@ -788,3 +788,9 @@ VARS = [
       "Never missing.", FILT, "calendar-first samples",
       "Injury regression observations under the calendar-first sequence."),
 ]
+
+# November 2026 professor feedback: appended after the 150 original columns (definitions in feedback_nov2026_specs)
+from .feedback_nov2026_specs import SPECS as _FB_SPECS  # noqa: E402
+
+VARS += [V(x.variable, x.section, x.rod, x.source, x.cols, x.keys, x.rule, x.missing, x.kind, x.used, x.definition,
+           x.caveat, "high") for x in _FB_SPECS]

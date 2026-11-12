@@ -36,6 +36,8 @@ from . import playing_time_age as pta
 from . import playing_time_injury_adjusted as ia
 from . import playing_time_join as ptj
 from . import playing_time_regression as reg
+from . import feedback_nov2026 as fb
+from . import feedback_nov2026_specs as fb_specs
 from .daniel_scope_final import f0, md_table, pc
 from .column_guide_specs import (CORE_SHORTLIST, DOMAINS, MASTER_GUIDE, ORIGINS, S1C_ROLES, STAGE1C_GUIDE, USEFULNESS,
                                  VALID_WHEN)
@@ -861,13 +863,13 @@ def anton_trace(con, Einj: pd.DataFrame, Ept: pd.DataFrame, B: pd.DataFrame, in_
 # ---------------------------------------------------------------------------
 
 def master_table(u, T: pd.DataFrame, R2: pd.DataFrame, G2: pd.DataFrame, E: pd.DataFrame, B: pd.DataFrame,
-                 EI: pd.DataFrame, models: dict) -> pd.DataFrame:
+                 EI: pd.DataFrame, models: dict, inj_tb: dict | None = None, pv: pd.DataFrame | None = None) -> pd.DataFrame:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", pd.errors.PerformanceWarning)   # column-by-column assembly; copied at the end
-        return _master_table(u, T, R2, G2, E, B, EI, models).copy()
+        return _master_table(u, T, R2, G2, E, B, EI, models, inj_tb, pv).copy()
 
 
-def _master_table(u, T, R2, G2, E, B, EI, models) -> pd.DataFrame:
+def _master_table(u, T, R2, G2, E, B, EI, models, inj_tb=None, pv=None) -> pd.DataFrame:
     ep = u.episodes.reset_index(drop=True)
     assert ep.event_id.is_unique
     M = pd.DataFrame({"event_id": ep.event_id})
@@ -991,6 +993,10 @@ def _master_table(u, T, R2, G2, E, B, EI, models) -> pd.DataFrame:
         M[c] = pd.to_datetime(M[c]).dt.strftime("%Y-%m-%d")
     M["date_of_birth"] = pd.to_datetime(M.date_of_birth, errors="coerce").dt.strftime("%Y-%m-%d")
     M["arrival_season"] = M.arrival_season.astype("Int64")
+    # November 2026 professor feedback: new columns appended after the 150 original ones (none of them is changed)
+    base = [x.variable for x in VARS if x.variable not in fb_specs.NEW_COLUMNS]
+    assert sorted(base) == sorted(M.columns), set(base) ^ set(M.columns)
+    M = fb.extend(M[base], u, E, inj_tb, pv)
     order = [x.variable for x in VARS]
     assert sorted(order) == sorted(M.columns) and len(order) == len(set(order)), \
         set(order) ^ set(M.columns)
@@ -1171,7 +1177,7 @@ def compute() -> tuple[dict, dict]:
     finally:
         con.close()
 
-    M = master_table(u, T, R2, G2, E, B, Einj, models)
+    M = master_table(u, T, R2, G2, E, B, Einj, models, tb, pv)
     D2 = variable_dictionary(M)
     N["master"] = {"rows": len(M), "columns": M.shape[1], "players": nplayers(M),
                    "sections": ints(D2.section.value_counts().sort_index()),

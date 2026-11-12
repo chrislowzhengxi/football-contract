@@ -386,3 +386,13 @@ VALID_WHEN = {
                            "injury_spell_count", "appearance_conflicts", "injury_games_strict", "fit_share_strict",
                            "injury_games_severe3", "fit_share_severe3", "injury_games_long5", "fit_share_long5")},
 }
+
+# November 2026 professor feedback (definitions in feedback_nov2026_specs)
+from .feedback_nov2026_specs import CORE_GROUP, NEW_DOMAINS, NEW_ORIGINS, NEW_USEFULNESS, SPECS as _FB_SPECS  # noqa: E402
+
+ORIGINS.update(NEW_ORIGINS)
+USEFULNESS.update(NEW_USEFULNESS)
+DOMAINS.update(NEW_DOMAINS)
+MASTER_GUIDE.update({x.variable: MG(x.origin, x.use) for x in _FB_SPECS})
+VALID_WHEN.update({x.variable: VW(x.domain, x.note, x.outside) for x in _FB_SPECS})
+CORE_SHORTLIST.append(CORE_GROUP)

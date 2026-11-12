@@ -51,11 +51,13 @@ CODE = {"S1": "src/stage1/backbone.py", "MOV": "src/stage1/movement.py", "S1B": 
         "RA": "src/analysis/playing_time_regression_audit.py", "AGE": "src/analysis/playing_time_age.py",
         "FEA": "src/analysis/playing_time_injury_feasibility.py", "INJ": "src/analysis/playing_time_injury_adjusted.py",
         "DL": "src/analysis/data_lineage.py", "ORG": "src/analysis/club_organisation.py",
-        "AUD": "src/analysis/appearance_audit.py"}
+        "AUD": "src/analysis/appearance_audit.py", "FB": "src/analysis/feedback_nov2026.py",
+        "LT": "src/analysis/league_tiers.py"}
 SOURCE_LABEL = {"duckdb": "DuckDB snapshot table", "raw": "raw Transfermarkt transfer history (JSON)",
                 "stage1c": "stage1c_canonical_transfers.csv", "master": "analysis_episode_master.csv",
                 "kaggle_inj": "Kaggle player_injuries.csv", "kaggle_prof": "Kaggle player_profiles.csv",
-                "geo_v2": "club_geography_v2.csv", "flags": "club_country_raw_flags.csv", "wikidata": "Wikidata cache"}
+                "geo_v2": "club_geography_v2.csv", "flags": "club_country_raw_flags.csv", "wikidata": "Wikidata cache",
+                "tiers": "league_tiers/club_season_league.csv (snapshot games + openfootball + football-data.co.uk)"}
 
 P = namedtuple("P", "cat inputs code note")
 
@@ -291,6 +293,11 @@ MASTER_OWN = {
                              f"master.is_youth_or_reserve_side {ORGIN}", "ORG", "thresholds chosen by us"),
     "same_org_reason": p(MECH, "master.same_org_confidence master.from_club_id", "ORG"),
 }
+
+# November 2026 professor feedback (definitions in feedback_nov2026_specs)
+from .feedback_nov2026_specs import SPECS as _FB_SPECS  # noqa: E402
+
+MASTER_OWN.update({x.variable: p(x.cat, x.inputs, x.code) for x in _FB_SPECS})
 
 # ---------------------------------------------------------------------------
 # Week 4-6 report variables
@@ -754,7 +761,8 @@ def source_schemas() -> dict:
             "kaggle_inj": hdr(ROOT / "data/raw/external_injuries/salimt_kaggle/player_injuries/player_injuries.csv"),
             "kaggle_prof": hdr(ROOT / "data/raw/external_injuries/salimt_kaggle/player_profiles/player_profiles.csv"),
             "geo_v2": hdr(OUT / "club_geography_v2.csv"), "flags": hdr(OUT / "club_country_raw_flags.csv"),
-            "wikidata": {k for v in wiki["queried"].values() for x in v for k in x}}
+            "wikidata": {k for v in wiki["queried"].values() for x in v for k in x},
+            "tiers": hdr(ROOT / "data/processed/league_tiers/club_season_league.csv")}
 
 
 def exists(token: str, S: dict) -> bool:
